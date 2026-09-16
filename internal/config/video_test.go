@@ -26,7 +26,7 @@ s3_prefix: /air/video/
 upload_signing_key: upload-signing-key-with-32-bytes-minimum
 models:
   - name: runway/gen3a_turbo
-    provider_model: gen3a_turbo
+    provider_model: gen4_turbo
   - name: runway/gen4.5
     provider_model: gen4.5
 `), &cfg)
@@ -93,7 +93,7 @@ func validVideoConfig() VideoConfig {
 		MaxArtifactBytes:  defaultMaxArtifactBytes,
 		WorkerConcurrency: 1,
 		Models: []VideoModelConfig{
-			{Name: VideoModelGen3ATurbo, ProviderModel: "gen3a_turbo"},
+			{Name: VideoModelGen3ATurbo, ProviderModel: "gen4_turbo"},
 			{Name: VideoModelGen45, ProviderModel: "gen4.5"},
 		},
 	}

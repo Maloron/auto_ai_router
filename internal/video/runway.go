@@ -49,7 +49,7 @@ func NewRunwayClient(cfg RunwayConfig) (*RunwayClient, error) {
 		cfg.HTTPClient = &client
 	}
 	if len(cfg.Models) == 0 {
-		cfg.Models = map[string]string{"runway/gen3a_turbo": "gen3a_turbo", "runway/gen4.5": "gen4.5"}
+		cfg.Models = map[string]string{"runway/gen3a_turbo": "gen4_turbo", "runway/gen4.5": "gen4.5"}
 	}
 	models := make(map[string]string, len(cfg.Models))
 	for public, provider := range cfg.Models {
@@ -68,6 +68,9 @@ func (c *RunwayClient) Submit(ctx context.Context, j *Job, promptImage string) (
 	model := c.models[j.Request.Model]
 	if model == "" {
 		return "", ErrUnsupportedModel
+	}
+	if j.Request.Model == "runway/gen3a_turbo" && promptImage == "" {
+		model = "gen4.5"
 	}
 	ratio := runwayRatio(j.Request.AspectRatio)
 	if ratio == "" {

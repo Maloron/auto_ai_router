@@ -19,6 +19,11 @@ Supported models
 - `runway/gen3a_turbo`
 - `runway/gen4.5`
 
+Runway retired the provider model `gen3a_turbo` on 30 July 2026.
+AIR preserves the public identifier `runway/gen3a_turbo` through active replacements.
+Text requests use `gen4.5`.
+Image requests use `gen4_turbo`.
+
 ## Runtime
 
 The public AIR process authenticates every request through the LiteLLM database.
@@ -53,7 +58,7 @@ video:
   worker_concurrency: 1
   models:
     - name: runway/gen3a_turbo
-      provider_model: gen3a_turbo
+      provider_model: gen4_turbo
     - name: runway/gen4.5
       provider_model: gen4.5
 ```

@@ -167,7 +167,7 @@ func (c VideoConfig) Validate() error {
 		return fmt.Errorf("video.worker_concurrency must be positive")
 	}
 	want := map[string]string{
-		VideoModelGen3ATurbo: "gen3a_turbo",
+		VideoModelGen3ATurbo: "gen4_turbo",
 		VideoModelGen45:      "gen4.5",
 	}
 	if len(c.Models) != len(want) {
