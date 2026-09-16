@@ -105,6 +105,7 @@ func (s *MemoryObjectStore) OpenResult(_ context.Context, j *Job) (*Object, erro
 
 type S3Config struct {
 	Endpoint, Region, Bucket, Prefix, AccessKey, SecretKey string
+	ArtifactProxyURL                                       string
 	HTTPClient                                             *http.Client
 	MaxArtifactBytes                                       int64
 	AllowPrivateArtifactHosts                              bool
@@ -122,6 +123,12 @@ func NewS3Store(cfg S3Config) (*S3Store, error) {
 	}
 	if cfg.Region == "" {
 		cfg.Region = "us-east-1"
+	}
+	if cfg.ArtifactProxyURL != "" {
+		proxyURL, proxyErr := url.Parse(cfg.ArtifactProxyURL)
+		if proxyErr != nil || proxyURL.Host == "" || proxyURL.Scheme != "http" && proxyURL.Scheme != "https" {
+			return nil, ErrInvalid
+		}
 	}
 	if cfg.MaxArtifactBytes <= 0 {
 		cfg.MaxArtifactBytes = MaxArtifactBytes
@@ -174,7 +181,7 @@ func (s *S3Store) FetchResult(ctx context.Context, j *Job, rawURL string) (Objec
 	if err = validateArtifactURL(ctx, u, s.cfg.AllowPrivateArtifactHosts); err != nil {
 		return Object{}, err
 	}
-	client, err := safeArtifactClient(s.cfg.AllowPrivateArtifactHosts)
+	client, err := safeArtifactClient(s.cfg.AllowPrivateArtifactHosts, s.cfg.ArtifactProxyURL)
 	if err != nil {
 		return Object{}, err
 	}
@@ -224,13 +231,25 @@ func (s *S3Store) FetchResult(ctx context.Context, j *Job, rawURL string) (Objec
 		_ = tmp.Close()
 		return Object{}, err
 	}
+	prefix := make([]byte, 12)
+	read, readErr := io.ReadFull(tmp, prefix)
+	if readErr != nil && readErr != io.ErrUnexpectedEOF {
+		_ = tmp.Close()
+		return Object{}, readErr
+	}
+	if !validSignature(ct, prefix[:read]) {
+		_ = tmp.Close()
+		return Object{}, ErrInvalid
+	}
+	if _, err = tmp.Seek(0, io.SeekStart); err != nil {
+		_ = tmp.Close()
+		return Object{}, err
+	}
 	if err = s.putReader(ctx, resultKey(j.OrganizationID, j.ID), ct, tmp, size); err != nil {
 		_ = tmp.Close()
 		return Object{}, err
 	}
-	if err = tmp.Close(); err != nil {
-		return Object{}, err
-	}
+	_ = tmp.Close()
 	return Object{ContentType: ct, Size: size, ETag: hex.EncodeToString(hasher.Sum(nil))}, nil
 }
 func (s *S3Store) OpenResult(ctx context.Context, j *Job) (*Object, error) {
@@ -494,13 +513,22 @@ func secureEndpoint(u *url.URL) bool {
 	host := strings.Trim(strings.ToLower(u.Hostname()), "[]")
 	return host == "localhost" || net.ParseIP(host) != nil && net.ParseIP(host).IsLoopback()
 }
-func safeArtifactClient(allowPrivate bool) (*http.Client, error) {
+func safeArtifactClient(allowPrivate bool, proxyRawURL string) (*http.Client, error) {
 	if allowPrivate {
 		return &http.Client{}, nil
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
 	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
-	transport.DialContext = func(dialCtx context.Context, network, address string) (net.Conn, error) {
+	if proxyRawURL != "" {
+		proxyURL, err := url.Parse(proxyRawURL)
+		if err != nil {
+			return nil, err
+		}
+		transport.Proxy = http.ProxyURL(proxyURL)
+		return &http.Client{Transport: transport}, nil
+	}
+	transport.DialContext = func(dialCtx context.Context, _ string, address string) (net.Conn, error) {
 		hostname, port, err := net.SplitHostPort(address)
 		if err != nil {
 			return nil, ErrInvalid
@@ -509,14 +537,21 @@ func safeArtifactClient(allowPrivate bool) (*http.Client, error) {
 		if err != nil {
 			return nil, err
 		}
-		d := net.Dialer{Timeout: 15 * time.Second}
-		for _, addr := range ips {
-			if unsafeIP(addr.IP) {
-				continue
-			}
-			conn, err := d.DialContext(dialCtx, network, net.JoinHostPort(addr.IP.String(), port))
-			if err == nil {
-				return conn, nil
+		d := net.Dialer{Timeout: 5 * time.Second}
+		for _, wantIPv4 := range []bool{true, false} {
+			for _, addr := range ips {
+				isIPv4 := addr.IP.To4() != nil
+				if isIPv4 != wantIPv4 || unsafeIP(addr.IP) {
+					continue
+				}
+				dialNetwork := "tcp6"
+				if isIPv4 {
+					dialNetwork = "tcp4"
+				}
+				conn, err := d.DialContext(dialCtx, dialNetwork, net.JoinHostPort(addr.IP.String(), port))
+				if err == nil {
+					return conn, nil
+				}
 			}
 		}
 		return nil, ErrInvalid

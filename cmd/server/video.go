@@ -59,6 +59,7 @@ func initializeVideoOrExit(cfg *config.Config, prx *proxy.Proxy, db litellmdb.Ma
 		AccessKey:        cfg.Video.S3AccessKey,
 		SecretKey:        cfg.Video.S3SecretKey,
 		MaxArtifactBytes: cfg.Video.MaxArtifactBytes,
+		ArtifactProxyURL: cfg.Video.ArtifactProxyURL,
 	})
 	if err != nil {
 		logger.Error("Video object storage initialization failed", "error", err)

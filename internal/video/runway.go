@@ -188,7 +188,7 @@ func (c *RunwayClient) do(ctx context.Context, method, path string, body any, id
 		}
 		reader = bytes.NewReader(raw)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, reader)
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, reader) //nolint:gosec // base URL and paths are validated configuration
 	if err != nil {
 		return err
 	}
@@ -200,7 +200,7 @@ func (c *RunwayClient) do(ctx context.Context, method, path string, body any, id
 	if idem != "" {
 		req.Header.Set("Idempotency-Key", idem)
 	}
-	resp, err := c.http.Do(req)
+	resp, err := c.http.Do(req) //nolint:gosec // request target is the validated Runway base URL
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrProviderUnavailable, err)
 	}

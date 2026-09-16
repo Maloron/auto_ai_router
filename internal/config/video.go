@@ -38,6 +38,7 @@ type VideoConfig struct {
 	S3AccessKey       string             `yaml:"s3_access_key"`
 	S3SecretKey       string             `yaml:"s3_secret_key"`
 	S3Prefix          string             `yaml:"s3_prefix,omitempty"`
+	ArtifactProxyURL  string             `yaml:"artifact_proxy_url,omitempty"`
 	UploadSigningKey  string             `yaml:"upload_signing_key"`
 	PollInterval      time.Duration      `yaml:"poll_interval"`
 	LeaseTTL          time.Duration      `yaml:"lease_ttl"`
@@ -59,6 +60,7 @@ func (c *VideoConfig) UnmarshalYAML(value *yaml.Node) error {
 		S3AccessKey       string             `yaml:"s3_access_key"`
 		S3SecretKey       string             `yaml:"s3_secret_key"`
 		S3Prefix          string             `yaml:"s3_prefix,omitempty"`
+		ArtifactProxyURL  string             `yaml:"artifact_proxy_url,omitempty"`
 		UploadSigningKey  string             `yaml:"upload_signing_key"`
 		PollInterval      string             `yaml:"poll_interval"`
 		LeaseTTL          string             `yaml:"lease_ttl"`
@@ -104,6 +106,7 @@ func (c *VideoConfig) UnmarshalYAML(value *yaml.Node) error {
 	c.S3AccessKey = resolveEnvString(raw.S3AccessKey)
 	c.S3SecretKey = resolveEnvString(raw.S3SecretKey)
 	c.S3Prefix = strings.Trim(resolveEnvString(raw.S3Prefix), "/")
+	c.ArtifactProxyURL = resolveEnvString(raw.ArtifactProxyURL)
 	c.UploadSigningKey = resolveEnvString(raw.UploadSigningKey)
 	c.Models = raw.Models
 	for index := range c.Models {
@@ -149,6 +152,12 @@ func (c VideoConfig) Validate() error {
 		parsed, err := url.Parse(rawURL)
 		if err != nil || parsed.Scheme != "https" {
 			return fmt.Errorf("%s must use https", field)
+		}
+	}
+	if c.ArtifactProxyURL != "" {
+		parsed, err := url.Parse(c.ArtifactProxyURL)
+		if err != nil || parsed.Host == "" || parsed.Scheme != "http" && parsed.Scheme != "https" {
+			return fmt.Errorf("video.artifact_proxy_url must use http or https")
 		}
 	}
 	if c.PollInterval <= 0 {
