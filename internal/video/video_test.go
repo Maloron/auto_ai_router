@@ -248,6 +248,14 @@ func TestCompatibilityAliasesShareCanonicalIdempotencyHash(t *testing.T) {
 	require.ErrorIs(t, err, ErrConflict)
 }
 
+func TestRunwayRatioCompatibility(t *testing.T) {
+	require.Equal(t, "720:1280", runwayRatioFromSize("720x1280"))
+	require.Equal(t, "1280:720", runwayRatioFromSize("1920x1080"))
+	require.Equal(t, "1280:720", runwayGen45Ratio(runwayRatio("1:1"), ""))
+	require.Equal(t, "720:1280", runwayGen45Ratio(runwayRatio("1:1"), "720x1280"))
+	require.Equal(t, "832:1104", runwayRatio("3:4"))
+}
+
 func TestCancelBeforeSubmitReleasesWithoutProviderCall(t *testing.T) {
 	repo := NewMemoryStore()
 	objects := NewMemoryObjectStore()

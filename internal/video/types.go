@@ -191,13 +191,15 @@ func (r CreateRequest) normalized() (CreateRequest, error) {
 	default:
 		return r, ErrInvalid
 	}
-	if r.AspectRatio == "" {
+	if r.AspectRatio == "" && r.Size == "" {
 		r.AspectRatio = "16:9"
 	}
-	switch r.AspectRatio {
-	case "16:9", "9:16", "1:1", "4:3", "3:4", "1280:720", "720:1280", "1280:768", "768:1280", "960:960":
-	default:
-		return r, ErrInvalid
+	if r.AspectRatio != "" {
+		switch r.AspectRatio {
+		case "16:9", "9:16", "1:1", "4:3", "3:4", "1280:720", "720:1280", "1280:768", "768:1280", "960:960":
+		default:
+			return r, ErrInvalid
+		}
 	}
 	if r.Size != "" {
 		switch r.Size {

@@ -69,9 +69,12 @@ func (c *RunwayClient) Submit(ctx context.Context, j *Job, promptImage string) (
 	if model == "" {
 		return "", ErrUnsupportedModel
 	}
-	ratio := map[string]string{"16:9": "1280:720", "9:16": "720:1280", "1:1": "960:960", "4:3": "1104:832", "3:4": "832:1104"}[j.Request.AspectRatio]
+	ratio := runwayRatio(j.Request.AspectRatio)
 	if ratio == "" {
-		ratio = j.Request.AspectRatio
+		ratio = runwayRatioFromSize(j.Request.Size)
+	}
+	if strings.Contains(model, "gen4.5") {
+		ratio = runwayGen45Ratio(ratio, j.Request.Size)
 	}
 	payload := map[string]any{"model": model, "promptText": j.Request.Prompt, "ratio": ratio, "duration": j.Request.DurationSeconds, "watermark": false}
 	if j.Request.Seed != nil {
@@ -91,6 +94,44 @@ func (c *RunwayClient) Submit(ctx context.Context, j *Job, promptImage string) (
 		return "", fmt.Errorf("runway response has no task id")
 	}
 	return id, nil
+}
+
+func runwayRatio(value string) string {
+	switch strings.TrimSpace(value) {
+	case "16:9":
+		return "1280:720"
+	case "9:16":
+		return "720:1280"
+	case "1:1":
+		return "960:960"
+	case "4:3":
+		return "1104:832"
+	case "3:4":
+		return "832:1104"
+	default:
+		return strings.TrimSpace(value)
+	}
+}
+
+func runwayRatioFromSize(value string) string {
+	switch strings.TrimSpace(value) {
+	case "720p", "1080p", "1280x720", "1920x1080", "1792x1024":
+		return "1280:720"
+	case "720x1280", "1080x1920", "1024x1792":
+		return "720:1280"
+	default:
+		return ""
+	}
+}
+
+func runwayGen45Ratio(ratio, size string) string {
+	if ratio == "1280:720" || ratio == "720:1280" {
+		return ratio
+	}
+	if fallback := runwayRatioFromSize(size); fallback != "" {
+		return fallback
+	}
+	return "1280:720"
 }
 
 func (c *RunwayClient) Poll(ctx context.Context, id string) (ProviderResult, error) {
