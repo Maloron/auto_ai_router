@@ -101,6 +101,8 @@ type ModelPrice struct {
 	// Vision/Images cost per image (not per token)
 	OutputCostPerImage float64 `json:"output_cost_per_image,omitempty"`
 
+	OutputCostPerVideoPerSecond float64 `json:"output_cost_per_video_per_second,omitempty"`
+
 	// Built-in web search tool pricing. Values are per query/call, keyed by
 	// search_context_size_low|medium|high in LiteLLM's price format.
 	SearchContextCostPerQuery map[string]float64 `json:"search_context_cost_per_query,omitempty"`
@@ -314,6 +316,7 @@ type Manager struct {
 	clientModelSurfaceConfigured bool                         // distinguishes an omitted boundary from an explicit empty boundary
 	publicModelAliases           map[string]string            // client alias -> canonical LiteLLM public deployment identity
 	acceptedModelAliases         map[string]string            // accepted client alias -> canonical model, hidden from discovery
+	externalModelIDs             map[string]struct{}          // client-visible models handled outside the inference balancer
 	modelRealNames               map[string]string            // alias name -> real model name (global, no specific credential)
 	modelRealNamesPerCred        map[string]map[string]string // credential -> alias -> real model name (for credential-specific entries)
 	credentialMappingsReady      bool                         // true after static/DB credential mappings have been initialized
@@ -342,6 +345,7 @@ func New(logger *slog.Logger, defaultModelsRPM int, staticModels []config.ModelR
 		clientModelIDs:              make(map[string]struct{}),
 		publicModelAliases:          make(map[string]string),
 		acceptedModelAliases:        make(map[string]string),
+		externalModelIDs:            make(map[string]struct{}),
 		modelRealNames:              make(map[string]string),
 		modelRealNamesPerCred:       make(map[string]map[string]string),
 		modelWebSocketResponses:     make(map[string]bool),
@@ -763,6 +767,23 @@ func (m *Manager) SetAcceptedModelAliases(aliases map[string]string) {
 	m.invalidateAllModelsCachesLocked()
 }
 
+// SetExternalModelIDs registers models served outside the inference balancer.
+// They remain part of model discovery and organization policy validation but
+// never receive credential mappings.
+func (m *Manager) SetExternalModelIDs(modelIDs []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.externalModelIDs = make(map[string]struct{}, len(modelIDs))
+	for _, modelID := range modelIDs {
+		modelID = strings.TrimSpace(modelID)
+		if modelID != "" {
+			m.externalModelIDs[modelID] = struct{}{}
+		}
+	}
+	m.allModels = nil
+	m.invalidateAllModelsCachesLocked()
+}
+
 func (m *Manager) clientAliasTargetLocked(modelID string) (string, bool, bool) {
 	publicTarget, publicConfigured := m.publicModelAliases[modelID]
 	acceptedTarget, acceptedConfigured := m.acceptedModelAliases[modelID]
@@ -781,6 +802,9 @@ func (m *Manager) clientAliasTargetLocked(modelID string) (string, bool, bool) {
 func (m *Manager) IsClientModelIDRoutable(modelID string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	if _, external := m.externalModelIDs[modelID]; external {
+		return true
+	}
 	if target, aliased, unambiguous := m.clientAliasTargetLocked(modelID); aliased {
 		if !unambiguous || !m.publicModelAliasTargetActiveLocked(target) {
 			return false
@@ -814,6 +838,9 @@ func (m *Manager) ResolvePublicModelAlias(modelID string) (string, bool, error) 
 }
 
 func (m *Manager) clientCanonicalRouteTargetLocked(modelID string) (string, bool) {
+	if _, external := m.externalModelIDs[modelID]; external {
+		return modelID, true
+	}
 	if len(m.modelToCredentials[modelID]) > 0 {
 		return modelID, true
 	}
@@ -1342,11 +1369,14 @@ func (m *Manager) GetAllModels() ModelsResponse {
 	var models []Model
 	modelMap := make(map[string]bool)
 	allModelsSnapshot := append([]Model(nil), m.allModels...)
-	routableModels := make(map[string]struct{}, len(m.modelToCredentials))
+	routableModels := make(map[string]struct{}, len(m.modelToCredentials)+len(m.externalModelIDs))
 	for modelID, credentialNames := range m.modelToCredentials {
 		if len(credentialNames) > 0 {
 			routableModels[modelID] = struct{}{}
 		}
+	}
+	for modelID := range m.externalModelIDs {
+		routableModels[modelID] = struct{}{}
 	}
 	credentialMappingsReady := m.credentialMappingsReady
 	// Add static models first (configured in model_limits)
@@ -1369,7 +1399,6 @@ func (m *Manager) GetAllModels() ModelsResponse {
 	} else {
 		models = make([]Model, 0, len(allModelsSnapshot))
 	}
-
 	// Also add models from credential config (allModels)
 	for _, model := range allModelsSnapshot {
 		if credentialMappingsReady {
@@ -1651,9 +1680,13 @@ func (m *Manager) projectClientModelCatalogLocked(internalModels []Model) []Mode
 	}
 	var models []Model
 	if m.clientModelSurfaceConfigured {
+		clientModelIDs := make(map[string]struct{}, len(m.clientModelIDs))
+		for modelID := range m.clientModelIDs {
+			clientModelIDs[modelID] = struct{}{}
+		}
 		models = projectConfiguredClientModelCatalog(
 			internalModels,
-			m.clientModelIDs,
+			clientModelIDs,
 			m.modelAliases,
 			activePublicAliases,
 		)
@@ -2923,6 +2956,9 @@ func (m *Manager) visibleCredentialNamesLocked(visibility scope.Context) map[str
 }
 
 func (m *Manager) modelVisibleLocked(modelID string, visibleCreds map[string]bool, visibility scope.Context) bool {
+	if _, external := m.externalModelIDs[modelID]; external {
+		return true
+	}
 	if len(visibleCreds) == 0 {
 		return false
 	}

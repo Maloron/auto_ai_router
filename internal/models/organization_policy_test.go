@@ -148,3 +148,29 @@ func TestLoadOrganizationPolicies_FreePriceAndScopedCatalog(t *testing.T) {
 	require.NotNil(t, resolution.ModelPrice)
 	assert.True(t, resolution.ModelPrice.CacheReadInputTokensFree)
 }
+
+func TestOrganizationPolicyAcceptsExternalModel(t *testing.T) {
+	manager := testPolicyManager()
+	manager.SetExternalModelIDs([]string{"runway/gen4.5"})
+	registry, err := LoadOrganizationPolicies([]config.OrganizationPolicyConfig{{
+		OrganizationID:  "org-video",
+		PriceProfileID:  "profile-video",
+		ModelPricesLink: writePolicyPrices(t, `{"runway/gen4.5":{"output_cost_per_video_per_second":1.25}}`),
+		AllowlistSet:    true,
+		ModelAllowlist:  []string{"runway/gen4.5"},
+	}}, manager, validPolicyOptions())
+	require.NoError(t, err)
+	policy, ok := registry.Policy("org-video")
+	require.True(t, ok)
+
+	resolution, err := manager.ResolveOrganizationModelScoped(policy, "runway/gen4.5", scope.PublicContext())
+	require.NoError(t, err)
+	assert.Equal(t, "runway/gen4.5", resolution.ModelID)
+	require.NotNil(t, resolution.ModelPrice)
+	assert.Equal(t, 1.25, resolution.ModelPrice.OutputCostPerVideoPerSecond)
+	assert.Equal(
+		t,
+		[]string{"runway/gen4.5"},
+		responseModelIDs(manager.GetAllModelsScopedForOrganization(scope.PublicContext(), policy)),
+	)
+}
