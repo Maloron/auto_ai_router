@@ -39,9 +39,9 @@ video:
   runway_api_key: os.environ/AIR_VIDEO_RUNWAY_API_KEY
   runway_base_url: https://api.dev.runwayml.com
   runway_api_version: 2024-11-06
-  s3_endpoint: https://storage.yandexcloud.net
-  s3_region: ru-central1
-  s3_bucket: vsellm-images
+  s3_endpoint: https://s3.twcstorage.ru
+  s3_region: ru-1
+  s3_bucket: a73def9f-143e-4c0e-a7c8-eb36cae1a4be
   s3_access_key: os.environ/AIR_VIDEO_S3_ACCESS_KEY
   s3_secret_key: os.environ/AIR_VIDEO_S3_SECRET_KEY
   s3_prefix: air-video/
