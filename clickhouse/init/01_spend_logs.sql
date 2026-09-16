@@ -249,14 +249,21 @@ CREATE TABLE air.raw_bodies_kafka
     request_id String,
     server_router_id String,
     start_time DateTime64(3),
+    -- When this router finished processing the request -- for a failure
+    -- row, effectively when the error was finalized/detected. Same value
+    -- as the matching air.spend_logs.end_time for this request.
+    end_time DateTime64(3),
     http_status UInt16,
     error_class Nullable(String),
     response_body Nullable(String),
     client_response_body Nullable(String),
     -- Only populated when kafka.raw_bodies.store_raw_body is enabled
-    -- (default false) -- the client's own request body (e.g. the prompt) is
-    -- a materially bigger privacy commitment than a provider's error text,
-    -- so it needs its own explicit opt-in. See MiXaiLL76/auto_ai_router#207.
+    -- (default false), and even then the router redacts prompt/message
+    -- content before publishing by default (messages/system/prompt/input/
+    -- contents/instructions replaced with a role/count-preserving
+    -- placeholder) -- see redactRequestBodyForLogging in the router's
+    -- proxy_helpers.go. kafka.raw_bodies.redact_sensitive_fields=false is
+    -- an explicit escape hatch that captures this verbatim instead.
     request_body Nullable(String)
 )
 ENGINE = Kafka
@@ -276,6 +283,7 @@ CREATE TABLE air.raw_bodies
     request_id String,
     server_router_id String,
     start_time DateTime64(3),
+    end_time DateTime64(3),
     http_status UInt16,
     error_class Nullable(String),
     response_body Nullable(String),
