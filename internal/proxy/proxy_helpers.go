@@ -123,6 +123,46 @@ func extractErrorBodyRaw(body []byte) string {
 	return string(body)
 }
 
+// ErrorOrigin names the specific code path that produced a failure outcome,
+// independent of ErrorMsg's free text — a short, fixed, greppable/filterable
+// tag rather than a message meant for a human to read once. It exists
+// because several failure paths (most notably the ones that end in 502) have
+// no upstream body to show at all (ErrorBodyRaw empty: the provider never
+// responded), so RawBodyEvent.ResponseBody alone can't distinguish "every
+// credential's connection attempt failed" from "the response was too big to
+// read" from "a mid-stream error's text didn't match any known signal" — all
+// three currently surface as an indistinguishable bare 502 unless the
+// operator parses ErrorMsg's prose by hand. Set alongside ErrorMsg/HTTPStatus
+// at each distinct failure call site; empty when a failure's cause is already
+// self-evident from HTTPStatus/ErrorBodyRaw alone (e.g. a plain classified
+// 4xx with the real provider text attached).
+type ErrorOrigin string
+
+const (
+	// ErrorOriginAllAttemptsExhausted: every direct-provider credential (and
+	// fallback) attempt failed at the transport level — no HTTP response was
+	// ever received from anyone. See proxyRequest's "All provider attempts
+	// failed" tail.
+	ErrorOriginAllAttemptsExhausted ErrorOrigin = "all_attempts_exhausted"
+	// ErrorOriginProxyForwardError: same as ErrorOriginAllAttemptsExhausted,
+	// but for an AIR-to-AIR proxy-type credential chain (base_url pointing at
+	// another AIR instance) — see proxyRequest's "Proxy forward error" tail.
+	ErrorOriginProxyForwardError ErrorOrigin = "proxy_forward_error"
+	// ErrorOriginResponseTooLarge: the upstream response body exceeded the
+	// configured read-size limit (ErrResponseBodyTooLarge). Treated as fatal
+	// — another credential's response would likely be just as large — so
+	// this is a final outcome, never retried.
+	ErrorOriginResponseTooLarge ErrorOrigin = "response_too_large"
+	// ErrorOriginUnclassifiedStreamError: a provider streamed a terminal
+	// error event whose embedded message/type/code didn't match any of
+	// statusCodeFromErrorSignals' known keywords, so the status defaulted to
+	// 502 as a catch-all rather than a genuine "bad gateway" diagnosis.
+	ErrorOriginUnclassifiedStreamError ErrorOrigin = "unclassified_stream_error"
+	// ErrorOriginWebSocketStreamError: a native Realtime WebSocket turn
+	// ended with outcome "stream_error".
+	ErrorOriginWebSocketStreamError ErrorOrigin = "websocket_stream_error"
+)
+
 // sensitiveRequestBodyFields are the top-level JSON keys that carry the
 // client's own prompt/conversation content, across the request shapes AIR
 // accepts: messages (chat completions, Anthropic native), prompt (legacy

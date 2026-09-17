@@ -261,6 +261,7 @@ type RequestLogContext struct {
 	ErrorMsg              string                   // Error message (added to metadata on failure)
 	ErrorBodyRaw          string                   // Untruncated upstream provider error body, captured BEFORE any client-facing masking (maskedUpstreamErrorBody/clientResponseBodyForCredential) is applied. Only ever set on failure paths. Feeds kafkalog.RawBodyEvent.ResponseBody, not SpendEvent.
 	ClientResponseBody    string                   // What the client actually received for this failure, AFTER masking (identical to ErrorBodyRaw when nothing was masked, e.g. mid-stream errors detected after the response already committed -- see markProxyProviderStreamError's clientSaw param). Feeds kafkalog.RawBodyEvent.ClientResponseBody.
+	ErrorOrigin           ErrorOrigin              // Which code path produced this failure (see ErrorOrigin's doc comment) -- a fixed, filterable tag distinct from ErrorMsg's free text. Empty when the cause is already self-evident from HTTPStatus/ErrorBodyRaw alone. Feeds kafkalog SpendEvent.ErrorOrigin/RawBodyEvent.ErrorOrigin and LiteLLM_SpendLogs.metadata.error_information.error_origin.
 	RequestBodyRaw        string                   // Untruncated client request body, captured only when kafka.raw_bodies.store_raw_body is enabled (see readRequestBodyAndSelectModel). Feeds kafkalog.RawBodyEvent.RequestBody. Empty whenever the toggle is off, so it never holds prompt content by default.
 	TokenUsage            *converter.TokenUsage    // Token usage with detailed breakdown
 	ModelPrice            *models.ModelPrice       // Price resolved before the provider request
@@ -1101,13 +1102,16 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request) {
 			statusCode := http.StatusBadGateway
 			statusMessage := "Bad Gateway"
 			errorMsg := fmt.Sprintf("Proxy forward error: %v", lastProxyErr)
+			errorOrigin := ErrorOriginProxyForwardError
 			if isTimeoutError(lastProxyErr) {
 				statusCode = http.StatusRequestTimeout
 				statusMessage = "Request Timeout"
 				errorMsg = "Request timeout"
+				errorOrigin = ""
 			} else if errors.Is(lastProxyErr, ErrResponseBodyTooLarge) {
 				statusMessage = "Bad Gateway: upstream response too large"
 				errorMsg = "Response body too large"
+				errorOrigin = ErrorOriginResponseTooLarge
 			}
 			p.logUpstreamError(r.Context(), "Proxy request failed: no upstream response", statusCode, cred, modelID, nil,
 				"error", lastProxyErr,
@@ -1116,6 +1120,7 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request) {
 			logCtx.Status = "failure"
 			logCtx.HTTPStatus = statusCode
 			logCtx.ErrorMsg = errorMsg
+			logCtx.ErrorOrigin = errorOrigin
 			logCtx.TargetURL = cred.BaseURL
 			// Client-facing outcome decided (all attempts exhausted, no response at
 			// all) — record exactly once here with genuine end-to-end duration.
@@ -1870,6 +1875,7 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request) {
 				logCtx.Status = "failure"
 				logCtx.HTTPStatus = http.StatusBadGateway
 				logCtx.ErrorMsg = fmt.Sprintf("Failed to read response body: %v", readErr)
+				logCtx.ErrorOrigin = ErrorOriginResponseTooLarge
 				logCtx.TargetURL = targetURL
 				// Client-facing outcome decided (502 written to the client below,
 				// no further attempts) — record exactly once here.
@@ -1951,9 +1957,11 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request) {
 		}
 		statusCode := http.StatusBadGateway
 		statusMessage := "Bad Gateway"
+		errorOrigin := ErrorOriginAllAttemptsExhausted
 		if transportErr != nil && isTimeoutError(transportErr) {
 			statusCode = http.StatusRequestTimeout
 			statusMessage = "Request Timeout"
+			errorOrigin = ""
 		}
 		p.logUpstreamError(r.Context(), "All provider attempts failed: no upstream response", statusCode, cred, modelID, nil,
 			"error", transportErr,
@@ -1962,6 +1970,7 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request) {
 		logCtx.Status = "failure"
 		logCtx.HTTPStatus = statusCode
 		logCtx.ErrorMsg = "All provider attempts failed"
+		logCtx.ErrorOrigin = errorOrigin
 		logCtx.TargetURL = targetURL
 		// Client-facing outcome decided (all attempts exhausted, no response at
 		// all) — record exactly once here with genuine end-to-end duration.
