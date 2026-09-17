@@ -26,6 +26,11 @@ type SpendEvent struct {
 	HTTPStatus   int    `json:"http_status"`
 	ErrorMessage string `json:"error_message,omitempty"`
 	ErrorClass   string `json:"error_class,omitempty"`
+	// ErrorOrigin names the specific code path that produced this failure
+	// (see proxy.ErrorOrigin's doc comment) -- a fixed, filterable tag
+	// distinct from ErrorMessage's free text. Empty when the cause is
+	// already self-evident from HTTPStatus/ErrorMessage alone.
+	ErrorOrigin string `json:"error_origin,omitempty"`
 
 	Model      string `json:"model"`      // Model alias, as requested by the client
 	RealModel  string `json:"real_model"` // Real upstream model name (price lookup key)
@@ -128,6 +133,12 @@ type RawBodyEvent struct {
 	EndTime    time.Time `json:"end_time"`
 	HTTPStatus int       `json:"http_status"`
 	ErrorClass string    `json:"error_class,omitempty"`
+	// ErrorOrigin names the specific code path that produced this failure
+	// (see proxy.ErrorOrigin's doc comment) -- particularly useful here since
+	// several of these origins (all_attempts_exhausted, proxy_forward_error,
+	// response_too_large) mean ResponseBody is empty: the upstream never
+	// actually responded, so this is the only field that says why.
+	ErrorOrigin string `json:"error_origin,omitempty"`
 	// ResponseBody is the raw upstream provider error body, capped at
 	// maxErrorBodyRawBytes. Same capture sites as SpendEvent.ErrorMessage
 	// used to populate before this event type existed, just uncapped at 512
