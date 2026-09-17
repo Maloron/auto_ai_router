@@ -260,30 +260,6 @@ func TestBuildKafkaSpendEvent_ErrorClassOnlyOnFailure(t *testing.T) {
 	assert.Empty(t, eventOK.ErrorClass)
 }
 
-// TestBuildKafkaSpendEvent_ErrorOriginOnlyOnFailure guards the same
-// gate as TestBuildKafkaSpendEvent_ErrorClassOnlyOnFailure for ErrorOrigin:
-// it exists specifically for 502s where ResponseBody is empty (no upstream
-// ever responded), so it must survive onto the published event or an
-// operator has no way left to tell "all attempts exhausted" from "response
-// too large" from a bare 502.
-func TestBuildKafkaSpendEvent_ErrorOriginOnlyOnFailure(t *testing.T) {
-	prx := NewTestProxyBuilder().Build()
-
-	logCtx := testLogCtx(t)
-	logCtx.HTTPStatus = http.StatusBadGateway
-	logCtx.ErrorOrigin = ErrorOriginAllAttemptsExhausted
-	eventFail := prx.buildKafkaSpendEvent(logCtx, "cred", "cred:model", "hash",
-		"", "", "", "", "api.openai.com", "failure", 0, nil, 0, logCtx.StartTime)
-	assert.Equal(t, "all_attempts_exhausted", eventFail.ErrorOrigin)
-
-	logCtx2 := testLogCtx(t)
-	logCtx2.HTTPStatus = 200
-	logCtx2.ErrorOrigin = ErrorOriginAllAttemptsExhausted // must not survive on a success event
-	eventOK := prx.buildKafkaSpendEvent(logCtx2, "cred", "cred:model", "hash",
-		"", "", "", "", "api.openai.com", "success", 0, nil, 0, logCtx2.StartTime)
-	assert.Empty(t, eventOK.ErrorOrigin)
-}
-
 // TestBuildRawBodyEvent_MapsRawBodies checks that buildRawBodyEvent (the
 // separate raw-bodies write-path, see kafkalog.RawBodyEvent) carries the
 // raw response body through untouched, keyed on the same

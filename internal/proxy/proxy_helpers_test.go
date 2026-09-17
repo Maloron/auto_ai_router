@@ -193,7 +193,7 @@ func TestGetClientIP(t *testing.T) {
 
 func TestBuildMetadata(t *testing.T) {
 	t.Run("nil_tokenInfo", func(t *testing.T) {
-		result := buildMetadata("hashed123", nil, "", "", 0, nil, "", nil, "", 0, "")
+		result := buildMetadata("hashed123", nil, "", 0, nil, "", nil, "", 0, "")
 		var m map[string]interface{}
 		err := json.Unmarshal([]byte(result), &m)
 		require.NoError(t, err)
@@ -211,7 +211,7 @@ func TestBuildMetadata(t *testing.T) {
 			UserAlias:      "my-user",
 			TeamAlias:      "my-team",
 		}
-		result := buildMetadata("hashed456", tokenInfo, "", "", 0, nil, "", nil, "gpt-4o", 0, "")
+		result := buildMetadata("hashed456", tokenInfo, "", 0, nil, "", nil, "gpt-4o", 0, "")
 		var m map[string]interface{}
 		err := json.Unmarshal([]byte(result), &m)
 		require.NoError(t, err)
@@ -225,7 +225,7 @@ func TestBuildMetadata(t *testing.T) {
 	})
 
 	t.Run("with_error_info", func(t *testing.T) {
-		result := buildMetadata("hashed789", nil, "rate limit exceeded", "", http.StatusTooManyRequests, nil, "", nil, "", 0, "")
+		result := buildMetadata("hashed789", nil, "rate limit exceeded", http.StatusTooManyRequests, nil, "", nil, "", 0, "")
 		var m map[string]interface{}
 		err := json.Unmarshal([]byte(result), &m)
 		require.NoError(t, err)
@@ -236,18 +236,6 @@ func TestBuildMetadata(t *testing.T) {
 		assert.Equal(t, "rate limit exceeded", errInfo["error_message"])
 		assert.Equal(t, float64(429), errInfo["error_code"])
 		assert.Equal(t, "RateLimitError", errInfo["error_class"])
-		assert.NotContains(t, errInfo, "error_origin", "empty ErrorOrigin must be omitted, not written as an empty string")
-	})
-
-	t.Run("with_error_origin", func(t *testing.T) {
-		result := buildMetadata("hashed790", nil, "All provider attempts failed", ErrorOriginAllAttemptsExhausted, http.StatusBadGateway, nil, "", nil, "", 0, "")
-		var m map[string]interface{}
-		err := json.Unmarshal([]byte(result), &m)
-		require.NoError(t, err)
-
-		errInfo, ok := m["error_information"].(map[string]interface{})
-		require.True(t, ok)
-		assert.Equal(t, "all_attempts_exhausted", errInfo["error_origin"])
 	})
 
 	t.Run("normalizes_usage", func(t *testing.T) {
@@ -263,7 +251,7 @@ func TestBuildMetadata(t *testing.T) {
 			CacheCreation1hTokens:  8,
 		}
 
-		result := buildMetadata("hashed", nil, "", "", 0, usage, "", nil, "gpt-4o", 0, "")
+		result := buildMetadata("hashed", nil, "", 0, usage, "", nil, "gpt-4o", 0, "")
 		var m map[string]interface{}
 		err := json.Unmarshal([]byte(result), &m)
 		require.NoError(t, err)

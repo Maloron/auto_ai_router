@@ -300,7 +300,7 @@ func (logCtx *RequestLogContext) applyWebSearchUsageDefaults(status string) {
 }
 
 // buildMetadata builds metadata JSON with user/team alias, usage, cost, and optional error info
-func buildMetadata(hashedToken string, tokenInfo *litellmdb.TokenInfo, errorMsg string, errorOrigin ErrorOrigin, httpStatus int, usage *converter.TokenUsage, requesterIP string, costs *converter.TokenCosts, modelID string, overheadMs float64, kafkaFallbackReason string) string {
+func buildMetadata(hashedToken string, tokenInfo *litellmdb.TokenInfo, errorMsg string, httpStatus int, usage *converter.TokenUsage, requesterIP string, costs *converter.TokenCosts, modelID string, overheadMs float64, kafkaFallbackReason string) string {
 	var userID, teamID, organizationID string
 	if tokenInfo != nil {
 		userID = tokenInfo.UserID
@@ -442,15 +442,11 @@ func buildMetadata(hashedToken string, tokenInfo *litellmdb.TokenInfo, errorMsg 
 	}
 
 	if errorMsg != "" {
-		errorInfo := map[string]interface{}{
+		metadata["error_information"] = map[string]interface{}{
 			"error_message": errorMsg,
 			"error_code":    httpStatus,
 			"error_class":   mapHTTPStatusToErrorClass(httpStatus),
 		}
-		if errorOrigin != "" {
-			errorInfo["error_origin"] = string(errorOrigin)
-		}
-		metadata["error_information"] = errorInfo
 		metadata["status"] = "failure"
 	}
 
