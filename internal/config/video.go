@@ -11,8 +11,8 @@ import (
 )
 
 const (
-	VideoModelGen3ATurbo = "runway/gen3a_turbo"
-	VideoModelGen45      = "runway/gen4.5"
+	VideoModelGen45     = "runway/gen4.5"
+	VideoModelGen4Turbo = "runway/gen4_turbo"
 
 	defaultRunwayBaseURL     = "https://api.dev.runwayml.com"
 	defaultRunwayAPIVersion  = "2024-11-06"
@@ -176,11 +176,11 @@ func (c VideoConfig) Validate() error {
 		return fmt.Errorf("video.worker_concurrency must be positive")
 	}
 	want := map[string]string{
-		VideoModelGen3ATurbo: "gen4_turbo",
-		VideoModelGen45:      "gen4.5",
+		VideoModelGen45:     "gen4.5",
+		VideoModelGen4Turbo: "gen4_turbo",
 	}
 	if len(c.Models) != len(want) {
-		return fmt.Errorf("video.models must contain exactly %s and %s", VideoModelGen3ATurbo, VideoModelGen45)
+		return fmt.Errorf("video.models must contain exactly %s and %s", VideoModelGen45, VideoModelGen4Turbo)
 	}
 	for _, model := range c.Models {
 		providerModel, ok := want[model.Name]

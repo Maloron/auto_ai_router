@@ -152,6 +152,9 @@ func (w *Worker) submit(ctx context.Context, j *Job) error {
 			return w.retryOrFail(ctx, j, ErrInvalid)
 		}
 		image = "data:" + o.ContentType + ";base64," + base64.StdEncoding.EncodeToString(data)
+		if len(image) > MaxImageDataURIBytes {
+			return w.retryOrFail(ctx, j, ErrInvalid)
+		}
 	} else if j.Request.InputImageID != "" {
 		image = j.Request.InputImageID
 	}

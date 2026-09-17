@@ -28,7 +28,7 @@ func (r testResolver) ResolvePrincipal(w http.ResponseWriter, req *http.Request,
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 		return Principal{}, ErrAuthentication
 	}
-	if model != "" && model != "runway/gen3a_turbo" && model != "runway/gen4.5" {
+	if model != "" && model != "runway/gen4.5" && model != "runway/gen4_turbo" {
 		return Principal{}, ErrAuthentication
 	}
 	return p, nil
@@ -99,7 +99,7 @@ func TestVideoEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"model":"runway/gen3a_turbo","prompt":"a calm sea","duration_seconds":5}`
+	body := `{"model":"runway/gen4.5","prompt":"a calm sea","duration_seconds":5}`
 	request := func(token, idem string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodPost, "/v1/videos", strings.NewReader(body))
 		req.Header.Set("Authorization", "Bearer "+token)
@@ -230,20 +230,20 @@ func TestCompatibilityAliasesShareCanonicalIdempotencyHash(t *testing.T) {
 		RatePerSecond: "0.07", Currency: "USD",
 	}
 	first, duplicate, err := service.Create(t.Context(), principal, "same", CreateRequest{
-		Model: "runway/gen3a_turbo", Prompt: "test", DurationSeconds: 5,
-		InputReference: map[string]any{"file_id": "file_123"},
+		Model: "runway/gen4.5", Prompt: "test", DurationSeconds: 5,
+		InputReference: map[string]any{"image_url": "https://example.com/frame.png"},
 	})
 	require.NoError(t, err)
 	require.False(t, duplicate)
 	second, duplicate, err := service.Create(t.Context(), principal, "same", CreateRequest{
-		Model: "runway/gen3a_turbo", Prompt: "test", Seconds: "5", InputImageID: "file_123",
+		Model: "runway/gen4.5", Prompt: "test", Seconds: "5", InputImageURL: "https://example.com/frame.png",
 	})
 	require.NoError(t, err)
 	require.True(t, duplicate)
 	require.Equal(t, first.ID, second.ID)
 	require.Equal(t, 1, billing.reserved)
 	_, _, err = service.Create(t.Context(), principal, "same", CreateRequest{
-		Model: "runway/gen3a_turbo", Prompt: "different", DurationSeconds: 5,
+		Model: "runway/gen4.5", Prompt: "different", DurationSeconds: 5,
 	})
 	require.ErrorIs(t, err, ErrConflict)
 }
@@ -251,9 +251,109 @@ func TestCompatibilityAliasesShareCanonicalIdempotencyHash(t *testing.T) {
 func TestRunwayRatioCompatibility(t *testing.T) {
 	require.Equal(t, "720:1280", runwayRatioFromSize("720x1280"))
 	require.Equal(t, "1280:720", runwayRatioFromSize("1920x1080"))
-	require.Equal(t, "1280:720", runwayGen45Ratio(runwayRatio("1:1"), ""))
-	require.Equal(t, "720:1280", runwayGen45Ratio(runwayRatio("1:1"), "720x1280"))
 	require.Equal(t, "832:1104", runwayRatio("3:4"))
+}
+
+func TestRunwayRequestValidationPrecedesBilling(t *testing.T) {
+	repo := NewMemoryStore()
+	billing := new(testBilling)
+	service, err := NewService(ServiceConfig{
+		Store: repo, Objects: NewMemoryObjectStore(), Billing: billing,
+	})
+	require.NoError(t, err)
+	principal := Principal{
+		OrganizationID: "org-a", PriceProfileID: "r8", PriceProfileSHA256: "sha",
+		RatePerSecond: "0.07", Currency: "USD",
+	}
+
+	invalid := []CreateRequest{
+		{Model: "runway/gen4_turbo", Prompt: "image required", DurationSeconds: 5, AspectRatio: "16:9"},
+		{Model: "runway/gen4.5", Prompt: "too short", DurationSeconds: 1, AspectRatio: "16:9"},
+		{Model: "runway/gen4.5", Prompt: "too long", DurationSeconds: 11, AspectRatio: "16:9"},
+		{Model: "runway/gen4.5", Prompt: "text mode ratio", DurationSeconds: 5, AspectRatio: "1:1"},
+		{Model: "runway/unsupported", Prompt: "unsupported", DurationSeconds: 5, AspectRatio: "16:9"},
+	}
+	for index, request := range invalid {
+		_, _, createErr := service.Create(t.Context(), principal, "invalid-"+strconv.Itoa(index), request)
+		require.Error(t, createErr, "request %d", index)
+	}
+	require.Zero(t, billing.reserved)
+
+	valid := []CreateRequest{
+		{Model: "runway/gen4.5", Prompt: "text landscape", DurationSeconds: 2, AspectRatio: "16:9"},
+		{Model: "runway/gen4.5", Prompt: "text portrait", DurationSeconds: 10, AspectRatio: "9:16"},
+		{Model: "runway/gen4.5", Prompt: "image square", DurationSeconds: 5, AspectRatio: "1:1", InputImageURL: "https://example.com/frame.png"},
+		{Model: "runway/gen4_turbo", Prompt: "image wide", DurationSeconds: 5, AspectRatio: "1584:672", InputImageURL: "https://example.com/frame.png"},
+	}
+	for index, request := range valid {
+		_, _, createErr := service.Create(t.Context(), principal, "valid-"+strconv.Itoa(index), request)
+		require.NoError(t, createErr, "request %d", index)
+	}
+	require.Equal(t, len(valid), billing.reserved)
+}
+
+func TestUploadedImageDataURILimit(t *testing.T) {
+	for _, mime := range []string{"image/png", "image/jpeg", "image/webp"} {
+		prefixLength := len("data:" + mime + ";base64,")
+		require.LessOrEqual(t, prefixLength+base64.StdEncoding.EncodedLen(MaxImageBytes), MaxImageDataURIBytes)
+		require.Greater(t, prefixLength+base64.StdEncoding.EncodedLen(MaxImageBytes+1), MaxImageDataURIBytes)
+	}
+}
+
+func TestRunwaySubmitModesAndDeleteCancellation(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		switch requests {
+		case 1:
+			require.Equal(t, http.MethodPost, r.Method)
+			require.Equal(t, "/v1/image_to_video", r.URL.Path)
+			var payload map[string]any
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+			require.Equal(t, "gen4_turbo", payload["model"])
+			require.Equal(t, "960:960", payload["ratio"])
+			require.Equal(t, float64(2), payload["duration"])
+			require.Equal(t, "https://example.com/frame.png", payload["promptImage"])
+			_, _ = io.WriteString(w, `{"id":"turbo-task"}`)
+		case 2:
+			require.Equal(t, http.MethodPost, r.Method)
+			require.Equal(t, "/v1/text_to_video", r.URL.Path)
+			var payload map[string]any
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+			require.Equal(t, "gen4.5", payload["model"])
+			require.Equal(t, "720:1280", payload["ratio"])
+			require.Equal(t, float64(10), payload["duration"])
+			require.NotContains(t, payload, "promptImage")
+			_, _ = io.WriteString(w, `{"id":"gen45-task"}`)
+		case 3:
+			require.Equal(t, http.MethodDelete, r.Method)
+			require.Equal(t, "/v1/tasks/turbo-task", r.URL.Path)
+			w.WriteHeader(http.StatusNoContent)
+		case 4:
+			require.Equal(t, http.MethodDelete, r.Method)
+			require.Equal(t, "/v1/tasks/already-gone", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			t.Fatalf("unexpected provider request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewRunwayClient(RunwayConfig{BaseURL: server.URL, APIKey: "secret"})
+	require.NoError(t, err)
+	turboID, err := client.Submit(t.Context(), &Job{ID: "job-turbo", Request: CreateRequest{
+		Model: "runway/gen4_turbo", Prompt: "square", DurationSeconds: 2, AspectRatio: "1:1",
+	}}, "https://example.com/frame.png")
+	require.NoError(t, err)
+	require.Equal(t, "turbo-task", turboID)
+	gen45ID, err := client.Submit(t.Context(), &Job{ID: "job-gen45", Request: CreateRequest{
+		Model: "runway/gen4.5", Prompt: "portrait", DurationSeconds: 10, AspectRatio: "9:16",
+	}}, "")
+	require.NoError(t, err)
+	require.Equal(t, "gen45-task", gen45ID)
+	require.NoError(t, client.Cancel(t.Context(), turboID))
+	require.NoError(t, client.Cancel(t.Context(), "already-gone"))
+	require.Equal(t, 4, requests)
 }
 
 func TestCancelBeforeSubmitReleasesWithoutProviderCall(t *testing.T) {
@@ -267,7 +367,7 @@ func TestCancelBeforeSubmitReleasesWithoutProviderCall(t *testing.T) {
 		RatePerSecond: "0.07", Currency: "USD",
 	}
 	job, _, err := service.Create(t.Context(), principal, "cancel", CreateRequest{
-		Model: "runway/gen3a_turbo", Prompt: "test", DurationSeconds: 5,
+		Model: "runway/gen4.5", Prompt: "test", DurationSeconds: 5,
 	})
 	require.NoError(t, err)
 	job, err = service.Cancel(t.Context(), principal.OrganizationID, job.ID)
@@ -314,7 +414,7 @@ func TestAmbiguousSubmitIsNotRetried(t *testing.T) {
 		RatePerSecond: "0.07", Currency: "USD",
 	}
 	job, _, err := service.Create(t.Context(), principal, "ambiguous", CreateRequest{
-		Model: "runway/gen3a_turbo", Prompt: "test", DurationSeconds: 5,
+		Model: "runway/gen4.5", Prompt: "test", DurationSeconds: 5,
 	})
 	require.NoError(t, err)
 	provider := &neverProvider{}
@@ -345,7 +445,7 @@ func TestRecoveredSubmittingJobIsNotSubmittedAgain(t *testing.T) {
 		RatePerSecond: "0.07", Currency: "USD",
 	}
 	job, _, err := service.Create(t.Context(), principal, "crash-window", CreateRequest{
-		Model: "runway/gen3a_turbo", Prompt: "test", DurationSeconds: 5,
+		Model: "runway/gen4.5", Prompt: "test", DurationSeconds: 5,
 	})
 	require.NoError(t, err)
 	now := time.Now().UTC().Add(time.Hour)

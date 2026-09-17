@@ -16,13 +16,15 @@ AIR exposes an asynchronous Runway video API.
 
 Supported models
 
-- `runway/gen3a_turbo`
 - `runway/gen4.5`
+- `runway/gen4_turbo`
 
-Runway retired the provider model `gen3a_turbo` on 30 July 2026.
-AIR preserves the public identifier `runway/gen3a_turbo` through active replacements.
-Text requests use `gen4.5`.
-Image requests use `gen4_turbo`.
+`runway/gen4.5` supports text and image input.
+`runway/gen4_turbo` requires image input.
+Duration is an integer from 2 through 10 seconds.
+Text mode accepts `1280:720` and `720:1280`.
+Image mode also accepts `1104:832`, `832:1104`, `960:960` and `1584:672`.
+Uploaded images are converted to data URIs no larger than 5,000,000 bytes.
 
 ## Runtime
 
@@ -57,10 +59,10 @@ video:
   max_artifact_bytes: 1073741824
   worker_concurrency: 1
   models:
-    - name: runway/gen3a_turbo
-      provider_model: gen4_turbo
     - name: runway/gen4.5
       provider_model: gen4.5
+    - name: runway/gen4_turbo
+      provider_model: gen4_turbo
 ```
 
 Video requires LiteLLM SpendLogs writes.

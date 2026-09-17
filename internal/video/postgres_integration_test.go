@@ -36,7 +36,7 @@ func TestPostgresStoreIdempotencyIsolationAndLeaseFencing(t *testing.T) {
 		RatePerSecond:      "0.07",
 		Currency:           "USD",
 	}
-	request := CreateRequest{Model: "runway/gen3a_turbo", Prompt: "test", DurationSeconds: 5, AspectRatio: "16:9"}
+	request := CreateRequest{Model: "runway/gen4.5", Prompt: "test", DurationSeconds: 5, AspectRatio: "16:9"}
 	const callers = 12
 	jobs := make(chan *Job, callers)
 	errors := make(chan error, callers)

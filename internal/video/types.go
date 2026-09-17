@@ -119,10 +119,11 @@ type Upload struct {
 }
 
 const (
-	MaxRequestBytes  = 64 << 10
-	MaxImageBytes    = 20 << 20
-	MaxVideoBytes    = 512 << 20
-	MaxArtifactBytes = 1 << 30
+	MaxRequestBytes      = 64 << 10
+	MaxImageDataURIBytes = 5_000_000
+	MaxImageBytes        = 3_749_982
+	MaxVideoBytes        = 512 << 20
+	MaxArtifactBytes     = 1 << 30
 )
 
 var digestPattern = regexp.MustCompile(`^[a-fA-F0-9]{64}$`)
@@ -180,15 +181,16 @@ func (r CreateRequest) normalized() (CreateRequest, error) {
 		r.DurationSeconds = 5
 	}
 	r.Seconds = ""
-	if r.Model != "runway/gen3a_turbo" && r.Model != "runway/gen4.5" {
+	if r.Model != "runway/gen4.5" && r.Model != "runway/gen4_turbo" {
 		return r, ErrUnsupportedModel
+	}
+	if r.Model == "runway/gen4_turbo" && r.InputImageID == "" && r.InputImageURL == "" {
+		return r, ErrInvalid
 	}
 	if r.Prompt == "" {
 		return r, ErrInvalid
 	}
-	switch r.DurationSeconds {
-	case 4, 5, 6, 8, 9, 10, 12:
-	default:
+	if r.DurationSeconds < 2 || r.DurationSeconds > 10 {
 		return r, ErrInvalid
 	}
 	if r.AspectRatio == "" && r.Size == "" {
@@ -196,7 +198,7 @@ func (r CreateRequest) normalized() (CreateRequest, error) {
 	}
 	if r.AspectRatio != "" {
 		switch r.AspectRatio {
-		case "16:9", "9:16", "1:1", "4:3", "3:4", "1280:720", "720:1280", "1280:768", "768:1280", "960:960":
+		case "16:9", "9:16", "1:1", "4:3", "3:4", "1280:720", "720:1280", "1104:832", "832:1104", "960:960", "1584:672":
 		default:
 			return r, ErrInvalid
 		}
@@ -215,7 +217,30 @@ func (r CreateRequest) normalized() (CreateRequest, error) {
 			return r, ErrInvalid
 		}
 	}
+	ratio := runwayRatio(r.AspectRatio)
+	if ratio == "" {
+		ratio = runwayRatioFromSize(r.Size)
+	}
+	hasImage := r.InputImageID != "" || r.InputImageURL != ""
+	if !validVideoRatio(r.Model, hasImage, ratio) {
+		return r, ErrInvalid
+	}
 	return r, nil
+}
+
+func validVideoRatio(model string, hasImage bool, ratio string) bool {
+	if model == "runway/gen4_turbo" && !hasImage {
+		return false
+	}
+	if !hasImage {
+		return ratio == "1280:720" || ratio == "720:1280"
+	}
+	switch ratio {
+	case "1280:720", "720:1280", "1104:832", "832:1104", "960:960", "1584:672":
+		return true
+	default:
+		return false
+	}
 }
 
 func (r UploadRequest) validate() error {

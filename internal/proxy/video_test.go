@@ -25,16 +25,16 @@ type videoSpendCommitter struct {
 
 func TestVideoPrincipalResolverUsesOrganizationPolicyPrice(t *testing.T) {
 	pricePath := filepath.Join(t.TempDir(), "prices.json")
-	require.NoError(t, os.WriteFile(pricePath, []byte(`{"runway/gen3a_turbo":{"output_cost_per_video_per_second":0.07}}`), 0600))
+	require.NoError(t, os.WriteFile(pricePath, []byte(`{"runway/gen4_turbo":{"output_cost_per_video_per_second":0.07}}`), 0600))
 	manager := routermodels.New(testhelpers.NewTestLogger(), 100, nil)
-	manager.SetClientModelIDs([]string{"runway/gen3a_turbo"})
-	manager.SetExternalModelIDs([]string{"runway/gen3a_turbo"})
+	manager.SetClientModelIDs([]string{"runway/gen4_turbo"})
+	manager.SetExternalModelIDs([]string{"runway/gen4_turbo"})
 	policies, err := routermodels.LoadOrganizationPolicies([]config.OrganizationPolicyConfig{{
 		OrganizationID:  "org-1",
 		PriceProfileID:  "r8",
 		ModelPricesLink: pricePath,
 		AllowlistSet:    true,
-		ModelAllowlist:  []string{"runway/gen3a_turbo"},
+		ModelAllowlist:  []string{"runway/gen4_turbo"},
 	}}, manager, routermodels.OrganizationPolicyLoadOptions{
 		LiteLLMDBEnabled: true, LiteLLMDBRequired: true,
 	})
@@ -54,7 +54,7 @@ func TestVideoPrincipalResolverUsesOrganizationPolicyPrice(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/v1/videos", nil)
 	request.Header.Set("Authorization", "Bearer video-key")
 	response := httptest.NewRecorder()
-	principal, err := NewVideoPrincipalResolver(prx).ResolvePrincipal(response, request, "runway/gen3a_turbo")
+	principal, err := NewVideoPrincipalResolver(prx).ResolvePrincipal(response, request, "runway/gen4_turbo")
 	require.NoError(t, err)
 	require.Equal(t, "org-1", principal.OrganizationID)
 	require.Equal(t, "video-key-hash", principal.APIKeyHash)
@@ -67,7 +67,7 @@ func TestVideoPrincipalResolverUsesOrganizationPolicyPrice(t *testing.T) {
 	limitedRequest := httptest.NewRequest(http.MethodPost, "/v1/videos", nil)
 	limitedRequest.Header.Set("Authorization", "Bearer video-key")
 	limitedResponse := httptest.NewRecorder()
-	_, err = NewVideoPrincipalResolver(prx).ResolvePrincipal(limitedResponse, limitedRequest, "runway/gen3a_turbo")
+	_, err = NewVideoPrincipalResolver(prx).ResolvePrincipal(limitedResponse, limitedRequest, "runway/gen4_turbo")
 	require.Error(t, err)
 	require.Equal(t, http.StatusServiceUnavailable, limitedResponse.Code)
 }
@@ -86,7 +86,7 @@ func TestVideoBillingUsesStableSpendIdentityAndOrganizationProfile(t *testing.T)
 		QuotedAmount: "0.35",
 		Currency:     "USD",
 		Request: video.CreateRequest{
-			Model:           "runway/gen3a_turbo",
+			Model:           "runway/gen4_turbo",
 			DurationSeconds: 5,
 		},
 		Principal: video.Principal{

@@ -34,7 +34,7 @@ func TestRunwayLiveParity(t *testing.T) {
 	require.NoError(t, err)
 	provider, err := NewRunwayClient(RunwayConfig{
 		BaseURL: "https://api.dev.runwayml.com", APIVersion: "2024-11-06", APIKey: runwayKey,
-		Models: map[string]string{"runway/gen3a_turbo": "gen4_turbo", "runway/gen4.5": "gen4.5"},
+		Models: map[string]string{"runway/gen4_turbo": "gen4_turbo", "runway/gen4.5": "gen4.5"},
 	})
 	require.NoError(t, err)
 	if taskIDs := strings.Fields(os.Getenv("AIR_VIDEO_LIVE_TASK_IDS")); len(taskIDs) > 0 {
@@ -66,8 +66,8 @@ func TestRunwayLiveParity(t *testing.T) {
 	}
 
 	upload := createLiveImageUpload(t, service, objects)
-	imageJob, _, err := service.Create(t.Context(), principal, "live-gen3-image", CreateRequest{
-		Model: "runway/gen3a_turbo", Prompt: "Slow camera movement over a calm blue abstract field",
+	imageJob, _, err := service.Create(t.Context(), principal, "live-gen4-turbo-image", CreateRequest{
+		Model: "runway/gen4_turbo", Prompt: "Slow camera movement over a calm blue abstract field",
 		InputImageID: upload.ID, DurationSeconds: 5, AspectRatio: "1:1",
 	})
 	require.NoError(t, err)

@@ -206,11 +206,11 @@ func TestExternalModelsRemainOutsideUnscopedCatalog(t *testing.T) {
 	manager.LoadModelsFromConfig([]config.CredentialConfig{credential})
 	manager.SetCredentials([]config.CredentialConfig{credential})
 	manager.SetClientModelIDs([]string{})
-	manager.SetExternalModelIDs([]string{"runway/gen4.5", "runway/gen3a_turbo"})
+	manager.SetExternalModelIDs([]string{"runway/gen4.5", "runway/gen4_turbo"})
 
 	assert.Empty(t, manager.GetAllModelsScoped(scope.PublicContext()).Data)
 	assert.True(t, manager.IsClientModelIDRoutable("runway/gen4.5"))
-	assert.False(t, manager.IsClientModelIDRoutable("runway/gen4_turbo"))
+	assert.True(t, manager.IsClientModelIDRoutable("runway/gen4_turbo"))
 	assert.Empty(t, manager.GetCredentialsForModel("runway/gen4.5"))
 	assert.False(t, manager.HasModel("provider", "runway/gen4.5"))
 

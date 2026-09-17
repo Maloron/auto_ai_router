@@ -25,10 +25,10 @@ s3_secret_key: os.environ/VIDEO_S3_SECRET
 s3_prefix: /air/video/
 upload_signing_key: upload-signing-key-with-32-bytes-minimum
 models:
-  - name: runway/gen3a_turbo
-    provider_model: gen4_turbo
   - name: runway/gen4.5
     provider_model: gen4.5
+  - name: runway/gen4_turbo
+    provider_model: gen4_turbo
 `), &cfg)
 
 	require.NoError(t, err)
@@ -43,7 +43,7 @@ models:
 	assert.Equal(t, int64(1<<30), cfg.MaxArtifactBytes)
 	assert.Equal(t, 1, cfg.WorkerConcurrency)
 	assert.Equal(t, "air/video", cfg.S3Prefix)
-	assert.Equal(t, []string{VideoModelGen3ATurbo, VideoModelGen45}, cfg.ModelIDs())
+	assert.Equal(t, []string{VideoModelGen45, VideoModelGen4Turbo}, cfg.ModelIDs())
 }
 
 func TestVideoConfigRejectsIncompleteModelSurface(t *testing.T) {
@@ -52,7 +52,7 @@ func TestVideoConfigRejectsIncompleteModelSurface(t *testing.T) {
 	require.ErrorContains(t, cfg.Validate(), "must contain exactly")
 
 	cfg = validVideoConfig()
-	cfg.Models[1].ProviderModel = "gen4_turbo"
+	cfg.Models[1].ProviderModel = "gen4.5"
 	require.ErrorContains(t, cfg.Validate(), "invalid video model mapping")
 }
 
@@ -93,8 +93,8 @@ func validVideoConfig() VideoConfig {
 		MaxArtifactBytes:  defaultMaxArtifactBytes,
 		WorkerConcurrency: 1,
 		Models: []VideoModelConfig{
-			{Name: VideoModelGen3ATurbo, ProviderModel: "gen4_turbo"},
 			{Name: VideoModelGen45, ProviderModel: "gen4.5"},
+			{Name: VideoModelGen4Turbo, ProviderModel: "gen4_turbo"},
 		},
 	}
 }

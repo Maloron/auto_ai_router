@@ -49,7 +49,7 @@ func NewRunwayClient(cfg RunwayConfig) (*RunwayClient, error) {
 		cfg.HTTPClient = &client
 	}
 	if len(cfg.Models) == 0 {
-		cfg.Models = map[string]string{"runway/gen3a_turbo": "gen4_turbo", "runway/gen4.5": "gen4.5"}
+		cfg.Models = map[string]string{"runway/gen4.5": "gen4.5", "runway/gen4_turbo": "gen4_turbo"}
 	}
 	models := make(map[string]string, len(cfg.Models))
 	for public, provider := range cfg.Models {
@@ -69,15 +69,9 @@ func (c *RunwayClient) Submit(ctx context.Context, j *Job, promptImage string) (
 	if model == "" {
 		return "", ErrUnsupportedModel
 	}
-	if j.Request.Model == "runway/gen3a_turbo" && promptImage == "" {
-		model = "gen4.5"
-	}
 	ratio := runwayRatio(j.Request.AspectRatio)
 	if ratio == "" {
 		ratio = runwayRatioFromSize(j.Request.Size)
-	}
-	if strings.Contains(model, "gen4.5") {
-		ratio = runwayGen45Ratio(ratio, j.Request.Size)
 	}
 	payload := map[string]any{"model": model, "promptText": j.Request.Prompt, "ratio": ratio, "duration": j.Request.DurationSeconds, "watermark": false}
 	if j.Request.Seed != nil {
@@ -127,16 +121,6 @@ func runwayRatioFromSize(value string) string {
 	}
 }
 
-func runwayGen45Ratio(ratio, size string) string {
-	if ratio == "1280:720" || ratio == "720:1280" {
-		return ratio
-	}
-	if fallback := runwayRatioFromSize(size); fallback != "" {
-		return fallback
-	}
-	return "1280:720"
-}
-
 func (c *RunwayClient) Poll(ctx context.Context, id string) (ProviderResult, error) {
 	if id == "" {
 		return ProviderResult{}, ErrInvalid
@@ -174,9 +158,7 @@ func (c *RunwayClient) Cancel(ctx context.Context, id string) error {
 	if id == "" {
 		return ErrInvalid
 	}
-	var out map[string]any
-	err := c.do(ctx, http.MethodPost, "/v1/tasks/"+url.PathEscape(id)+"/cancel", map[string]any{}, "", &out)
-	return err
+	return c.do(ctx, http.MethodDelete, "/v1/tasks/"+url.PathEscape(id), nil, "", nil)
 }
 
 func (c *RunwayClient) do(ctx context.Context, method, path string, body any, idem string, out any) error {
@@ -210,12 +192,12 @@ func (c *RunwayClient) do(ctx context.Context, method, path string, body any, id
 		return err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		if method == http.MethodPost && strings.HasSuffix(path, "/cancel") && resp.StatusCode == http.StatusNotFound {
+		if method == http.MethodDelete && resp.StatusCode == http.StatusNotFound {
 			return nil
 		}
 		return fmt.Errorf("runway status %d", resp.StatusCode)
 	}
-	if len(raw) == 0 {
+	if len(raw) == 0 || out == nil {
 		return nil
 	}
 	if err := json.Unmarshal(raw, out); err != nil {
