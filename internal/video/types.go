@@ -138,26 +138,6 @@ func (r CreateRequest) normalized() (CreateRequest, error) {
 	r.Quality = strings.TrimSpace(r.Quality)
 	r.AspectRatio = strings.TrimSpace(r.AspectRatio)
 	r.NegativePrompt = strings.TrimSpace(r.NegativePrompt)
-	if r.InputReference != nil {
-		ref, ok := r.InputReference.(map[string]any)
-		if !ok || len(ref) != 1 {
-			return r, ErrInvalid
-		}
-		if id, ok := ref["file_id"].(string); ok {
-			if r.InputImageID != "" {
-				return r, ErrInvalid
-			}
-			r.InputImageID = strings.TrimSpace(id)
-		} else if imageURL, ok := ref["image_url"].(string); ok {
-			if r.InputImageURL != "" {
-				return r, ErrInvalid
-			}
-			r.InputImageURL = strings.TrimSpace(imageURL)
-		} else {
-			return r, ErrInvalid
-		}
-		r.InputReference = nil
-	}
 	if r.InputImageID != "" && r.InputImageURL != "" {
 		return r, ErrInvalid
 	}

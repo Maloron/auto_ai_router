@@ -219,7 +219,7 @@ func TestUploadLifecycleAndLimits(t *testing.T) {
 	}
 }
 
-func TestCompatibilityAliasesShareCanonicalIdempotencyHash(t *testing.T) {
+func TestLegacyInputReferenceRemainsInert(t *testing.T) {
 	repo := NewMemoryStore()
 	objects := NewMemoryObjectStore()
 	billing := new(testBilling)
@@ -229,23 +229,16 @@ func TestCompatibilityAliasesShareCanonicalIdempotencyHash(t *testing.T) {
 		OrganizationID: "org-a", PriceProfileID: "r8", PriceProfileSHA256: "sha",
 		RatePerSecond: "0.07", Currency: "USD",
 	}
-	first, duplicate, err := service.Create(t.Context(), principal, "same", CreateRequest{
+	job, duplicate, err := service.Create(t.Context(), principal, "legacy-input-reference", CreateRequest{
 		Model: "runway/gen4.5", Prompt: "test", DurationSeconds: 5,
-		InputReference: map[string]any{"image_url": "https://example.com/frame.png"},
+		InputReference: map[string]any{"file_id": "file_123"},
 	})
 	require.NoError(t, err)
 	require.False(t, duplicate)
-	second, duplicate, err := service.Create(t.Context(), principal, "same", CreateRequest{
-		Model: "runway/gen4.5", Prompt: "test", Seconds: "5", InputImageURL: "https://example.com/frame.png",
-	})
-	require.NoError(t, err)
-	require.True(t, duplicate)
-	require.Equal(t, first.ID, second.ID)
+	require.Empty(t, job.Request.InputImageID)
+	require.Empty(t, job.Request.InputImageURL)
+	require.Equal(t, map[string]any{"file_id": "file_123"}, job.Request.InputReference)
 	require.Equal(t, 1, billing.reserved)
-	_, _, err = service.Create(t.Context(), principal, "same", CreateRequest{
-		Model: "runway/gen4.5", Prompt: "different", DurationSeconds: 5,
-	})
-	require.ErrorIs(t, err, ErrConflict)
 }
 
 func TestRunwayRatioCompatibility(t *testing.T) {
@@ -272,6 +265,7 @@ func TestRunwayRequestValidationPrecedesBilling(t *testing.T) {
 		{Model: "runway/gen4.5", Prompt: "too long", DurationSeconds: 11, AspectRatio: "16:9"},
 		{Model: "runway/gen4.5", Prompt: "text mode ratio", DurationSeconds: 5, AspectRatio: "1:1"},
 		{Model: "runway/gen4_turbo", Prompt: "unknown file", DurationSeconds: 5, AspectRatio: "1:1", InputImageID: "file_123"},
+		{Model: "runway/gen4_turbo", Prompt: "legacy reference is not image input", DurationSeconds: 5, AspectRatio: "1:1", InputReference: map[string]any{"file_id": "file_123"}},
 		{Model: "runway/unsupported", Prompt: "unsupported", DurationSeconds: 5, AspectRatio: "16:9"},
 	}
 	for index, request := range invalid {
