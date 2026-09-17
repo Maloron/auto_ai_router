@@ -271,6 +271,7 @@ func TestRunwayRequestValidationPrecedesBilling(t *testing.T) {
 		{Model: "runway/gen4.5", Prompt: "too short", DurationSeconds: 1, AspectRatio: "16:9"},
 		{Model: "runway/gen4.5", Prompt: "too long", DurationSeconds: 11, AspectRatio: "16:9"},
 		{Model: "runway/gen4.5", Prompt: "text mode ratio", DurationSeconds: 5, AspectRatio: "1:1"},
+		{Model: "runway/gen4_turbo", Prompt: "unknown file", DurationSeconds: 5, AspectRatio: "1:1", InputImageID: "file_123"},
 		{Model: "runway/unsupported", Prompt: "unsupported", DurationSeconds: 5, AspectRatio: "16:9"},
 	}
 	for index, request := range invalid {

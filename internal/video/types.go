@@ -161,6 +161,9 @@ func (r CreateRequest) normalized() (CreateRequest, error) {
 	if r.InputImageID != "" && r.InputImageURL != "" {
 		return r, ErrInvalid
 	}
+	if r.InputImageID != "" && !strings.HasPrefix(r.InputImageID, "upl_") {
+		return r, ErrInvalid
+	}
 	if r.InputImageURL != "" {
 		parsed, err := url.Parse(r.InputImageURL)
 		if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil {
@@ -222,16 +225,13 @@ func (r CreateRequest) normalized() (CreateRequest, error) {
 		ratio = runwayRatioFromSize(r.Size)
 	}
 	hasImage := r.InputImageID != "" || r.InputImageURL != ""
-	if !validVideoRatio(r.Model, hasImage, ratio) {
+	if !validVideoRatio(hasImage, ratio) {
 		return r, ErrInvalid
 	}
 	return r, nil
 }
 
-func validVideoRatio(model string, hasImage bool, ratio string) bool {
-	if model == "runway/gen4_turbo" && !hasImage {
-		return false
-	}
+func validVideoRatio(hasImage bool, ratio string) bool {
 	if !hasImage {
 		return ratio == "1280:720" || ratio == "720:1280"
 	}
