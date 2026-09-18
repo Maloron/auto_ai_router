@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/mixaill76/auto_ai_router/internal/config"
+	"github.com/mixaill76/auto_ai_router/internal/converter/converterutil"
 	"github.com/mixaill76/auto_ai_router/internal/scope"
 	"github.com/mixaill76/auto_ai_router/internal/utils"
 )
@@ -388,6 +389,20 @@ func (m *Manager) projectOrganizationCatalog(response ModelsResponse, visibility
 			continue
 		}
 		publicByID[model.ID] = model
+	}
+	for modelID := range m.externalModelIDs {
+		if !policy.allowlistAdmitsLocked(modelID) {
+			continue
+		}
+		if _, priced := policy.prices[modelID]; !priced {
+			continue
+		}
+		publicByID[modelID] = Model{
+			ID:      modelID,
+			Object:  "model",
+			Created: converterutil.GetCurrentTimestamp(),
+			OwnedBy: "system",
+		}
 	}
 	for source, target := range policy.mappings {
 		if policy.AllowlistSet {
