@@ -161,7 +161,7 @@ Common fields for all credentials:
 | ------------------ | ------ | -------------------------------------------------------------------------------------------------------------------------------- |
 | `name`             | string | Unique credential identifier                                                                                                     |
 | `type`             | string | Provider type: `openai`, `anthropic`, `cometapi`, `vertex-ai`, `gemini`, `bedrock`, `proxy`                                      |
-| `proxy_url`        | string | Optional outbound proxy URL for this credential (HTTP, HTTPS, SOCKS5)                       |
+| `proxy_url`        | string | Optional outbound proxy URL for this credential (HTTP, HTTPS, SOCKS5)                                                            |
 | `rpm`              | int    | Requests per minute limit (-1 = unlimited)                                                                                       |
 | `tpm`              | int    | Tokens per minute limit (-1 = unlimited)                                                                                         |
 | `is_fallback`      | bool   | Use as fallback when primary credentials are exhausted                                                                           |

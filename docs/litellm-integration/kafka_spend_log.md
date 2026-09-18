@@ -118,17 +118,17 @@ Capturing and storing request/response bodies for *every* request (success inclu
 
 The raw **provider response** body for a failed request is published separately from the spend event, to its own Kafka topic (`kafka.raw_bodies`, default topic `raw-bodies`, staged in ClickHouse as `air.raw_bodies_kafka`/`air.raw_bodies_read`) as a flat `kafkalog.RawBodyEvent`:
 
-| Field              | Type              | Description                                                                                                         |
-| ------------------ | ----------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `request_id`       | string            | Same value as the matching `SpendEvent.request_id` / `air.errors.request_id`; also the Kafka message key             |
-| `server_router_id` | string            | Same value as the matching spend event. Join on `(request_id, server_router_id)`, not `request_id` alone — see below |
-| `start_time`       | timestamp         | Same value as the matching `SpendEvent.start_time` — when this router started processing the request                 |
-| `end_time`         | timestamp         | Same value as the matching `SpendEvent.end_time` — when this router finished processing it; for a failure row, effectively when the error was finalized/detected |
-| `http_status`      | int               | HTTP status of the request. Usually ≥400 on a failure row, but **not always** — a mid-stream SSE error (provider returns HTTP 200, then sends an error event inside the stream) is a genuine failure with a 2xx `http_status`         |
-| `error_class`      | string, omitempty | Same classification as `SpendEvent.error_class`, gated on the same canonical success/failure outcome (not on `http_status` directly, for the 2xx-mid-stream-failure reason above). Empty on success rows (see `store_only_errors` below) |
-| `response_body`    | string, omitempty | Raw upstream provider error body, capped at 16 KiB (uncapped relative to `error_message`'s 512 bytes)                 |
-| `client_response_body` | string, omitempty | What the router actually sent back to the client for this failure, capped the same way as `response_body`         |
-| `request_body`     | string, omitempty | The client's own request body, **with prompt/message content redacted** (see below). Only populated when `kafka.raw_bodies.store_raw_body: true`        |
+| Field                  | Type              | Description                                                                                                                                                                                                                              |
+| ---------------------- | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `request_id`           | string            | Same value as the matching `SpendEvent.request_id` / `air.errors.request_id`; also the Kafka message key                                                                                                                                 |
+| `server_router_id`     | string            | Same value as the matching spend event. Join on `(request_id, server_router_id)`, not `request_id` alone — see below                                                                                                                     |
+| `start_time`           | timestamp         | Same value as the matching `SpendEvent.start_time` — when this router started processing the request                                                                                                                                     |
+| `end_time`             | timestamp         | Same value as the matching `SpendEvent.end_time` — when this router finished processing it; for a failure row, effectively when the error was finalized/detected                                                                         |
+| `http_status`          | int               | HTTP status of the request. Usually ≥400 on a failure row, but **not always** — a mid-stream SSE error (provider returns HTTP 200, then sends an error event inside the stream) is a genuine failure with a 2xx `http_status`            |
+| `error_class`          | string, omitempty | Same classification as `SpendEvent.error_class`, gated on the same canonical success/failure outcome (not on `http_status` directly, for the 2xx-mid-stream-failure reason above). Empty on success rows (see `store_only_errors` below) |
+| `response_body`        | string, omitempty | Raw upstream provider error body, capped at 16 KiB (uncapped relative to `error_message`'s 512 bytes)                                                                                                                                    |
+| `client_response_body` | string, omitempty | What the router actually sent back to the client for this failure, capped the same way as `response_body`                                                                                                                                |
+| `request_body`         | string, omitempty | The client's own request body, **with prompt/message content redacted** (see below). Only populated when `kafka.raw_bodies.store_raw_body: true`                                                                                         |
 
 **`response_body` and `client_response_body` are usually different values, on purpose.** `maskedUpstreamErrorBody` (`internal/proxy/errors.go`) replaces the provider's own error text with a short, pre-vetted message for essentially every 4xx/5xx response — unconditionally, not gated by credential type — specifically so provider internals are never echoed back to the client. `response_body` is what the provider actually said; `client_response_body` is what the client was told instead. They're identical only when a mid-stream error is detected *after* the response has already committed and streamed those exact bytes to the client live — at that point there's nothing left to mask in hindsight.
 
@@ -138,11 +138,11 @@ The raw **provider response** body for a failed request is published separately 
 
 Three independent toggles control scope, all under `kafka.raw_bodies`:
 
-| Toggle | Default | Effect when changed |
-| --- | --- | --- |
-| `store_raw_body` | `false` | `true` additionally captures the client's request body into `request_body` |
-| `store_only_errors` | `true` | `false` publishes an event for *every* request, not just failures — `error_class`/`response_body`/`client_response_body` stay empty on success rows; mainly useful once `store_raw_body` is also on and the goal is capturing requests generally, not just failures |
-| `redact_sensitive_fields` | `true` | `false` disables the prompt/message redaction above — `request_body` then carries the request verbatim. Only meaningful when `store_raw_body` is also `true` |
+| Toggle                    | Default | Effect when changed                                                                                                                                                                                                                                                 |
+| ------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `store_raw_body`          | `false` | `true` additionally captures the client's request body into `request_body`                                                                                                                                                                                          |
+| `store_only_errors`       | `true`  | `false` publishes an event for *every* request, not just failures — `error_class`/`response_body`/`client_response_body` stay empty on success rows; mainly useful once `store_raw_body` is also on and the goal is capturing requests generally, not just failures |
+| `redact_sensitive_fields` | `true`  | `false` disables the prompt/message redaction above — `request_body` then carries the request verbatim. Only meaningful when `store_raw_body` is also `true`                                                                                                        |
 
 With all three left at their defaults, behavior is unchanged from the original design: failure-only, provider/client response bodies only, no request content.
 

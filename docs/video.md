@@ -4,15 +4,15 @@ AIR exposes an asynchronous Runway video API.
 
 ## Public API
 
-| Method | Path |
-| --- | --- |
-| POST | `/v1/videos` |
-| GET | `/v1/videos/{id}` |
-| DELETE | `/v1/videos/{id}` |
-| GET and HEAD | `/v1/videos/{id}/content` |
-| POST | `/v1/media/uploads` |
-| PUT | `/v1/media/uploads/{id}/object` |
-| POST | `/v1/media/uploads/{id}/complete` |
+| Method       | Path                              |
+| ------------ | --------------------------------- |
+| POST         | `/v1/videos`                      |
+| GET          | `/v1/videos/{id}`                 |
+| DELETE       | `/v1/videos/{id}`                 |
+| GET and HEAD | `/v1/videos/{id}/content`         |
+| POST         | `/v1/media/uploads`               |
+| PUT          | `/v1/media/uploads/{id}/object`   |
+| POST         | `/v1/media/uploads/{id}/complete` |
 
 Supported models
 
