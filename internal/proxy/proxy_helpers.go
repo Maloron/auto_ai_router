@@ -37,6 +37,50 @@ func isTimeoutError(err error) bool {
 	return false
 }
 
+// isClientContextCanceled reports whether r's own context is already
+// canceled — i.e. the client itself gave up (closed the connection, hit its
+// own request timeout) before AIR finished talking to any upstream. Checked
+// directly against r.Context().Err() rather than pattern-matching the
+// transport error returned by p.client.Do, so it can't be confused with
+// isClientDisconnectError's EPIPE/ECONNRESET cases: for an *outbound* call
+// (AIR -> provider) those mean the connection to the *provider* broke, a
+// genuine upstream failure, not the inbound client having left. A canceled
+// r.Context() is unambiguous either way: it's used as the parent context for
+// every upstream request instead of the incoming request's own connection
+// (see upstreamRequestContext), so it can only become Done via the client
+// disconnecting or the handler itself returning.
+func isClientContextCanceled(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	return errors.Is(r.Context().Err(), context.Canceled)
+}
+
+// isClientCanceledTransportError reports whether attemptErr -- the error a
+// specific credential attempt just failed with -- was actually *caused* by
+// the client disconnecting, as opposed to r's context merely being canceled
+// at some point during a longer retry sequence for an unrelated reason.
+//
+// The two checks answer different questions and neither alone is enough:
+// isClientContextCanceled(r) alone would also fire for a credential attempt
+// that failed for a genuine, unrelated reason (e.g. a real ECONNREFUSED)
+// simply because the client *happened* to also give up around the same
+// time -- plausible whenever AIR's retry/fallback sequence takes long enough
+// that the client's own (often shorter) timeout elapses before AIR finishes
+// working through a real outage. Misclassifying that as client_canceled
+// would hide a genuine multi-credential outage from fail2ban/ERROR-level
+// alerting exactly when it matters most. Conversely, checking only
+// errors.Is(attemptErr, context.Canceled) without isClientContextCanceled(r)
+// would fire on a transport that returns a bare context.Canceled for
+// reasons unrelated to r's own context (see the "transport error" case in
+// client_error_messages_test.go, which relies on exactly this not
+// happening). Requiring both pins the classification to the one case that
+// actually matters: THIS attempt failed specifically because the client's
+// own context is what unblocked p.client.Do.
+func isClientCanceledTransportError(r *http.Request, attemptErr error) bool {
+	return errors.Is(attemptErr, context.Canceled) && isClientContextCanceled(r)
+}
+
 // isClientDisconnectError checks if an error indicates the client disconnected
 // (broken pipe, connection reset, context canceled). These are expected during
 // normal operation and should be logged at lower severity.
@@ -161,7 +205,27 @@ const (
 	// ErrorOriginWebSocketStreamError: a native Realtime WebSocket turn
 	// ended with outcome "stream_error".
 	ErrorOriginWebSocketStreamError ErrorOrigin = "websocket_stream_error"
+	// ErrorOriginClientCanceled: the client disconnected (closed the
+	// connection, or its own request timeout fired) before any credential
+	// attempt produced a response — see isClientContextCanceled. Distinct
+	// from ErrorOriginAllAttemptsExhausted/ErrorOriginProxyForwardError:
+	// those name a genuine upstream transport failure, while this one means
+	// no upstream failure occurred at all, AIR just gave up because the
+	// original caller already left. Carries StatusClientClosedRequest (499),
+	// not 502, and is deliberately excluded from fail2ban/credential-error
+	// accounting (see the isClientContextCanceled checks in the retry loops)
+	// since it reflects the client's behavior, not the credential's.
+	ErrorOriginClientCanceled ErrorOrigin = "client_canceled"
 )
+
+// StatusClientClosedRequest is the nginx-convention status (not defined by
+// net/http) used to record that a request ended because the client itself
+// disconnected before any response was available — as opposed to 502, which
+// would claim an upstream transport failure that never actually happened.
+// Never meaningfully delivered to the client (which is already gone by the
+// time this is decided); it exists for accurate logging/metrics/raw-body
+// classification.
+const StatusClientClosedRequest = 499
 
 // sensitiveRequestBodyFields are the top-level JSON keys that carry the
 // client's own prompt/conversation content, across the request shapes AIR
@@ -277,6 +341,13 @@ func mapHTTPStatusToErrorClass(statusCode int) string {
 		return "ServiceUnavailableError"
 	case http.StatusInternalServerError:
 		return "InternalServerError"
+	case StatusClientClosedRequest:
+		// Not a real provider/LiteLLM exception class (this status never
+		// reaches a client) -- distinguishes a client-side cancellation from
+		// both a genuine 4xx (BadRequestError) and a genuine upstream 5xx
+		// (APIConnectionError), which the >=400/>=500 default below would
+		// otherwise collapse it into.
+		return "ClientDisconnected"
 	default:
 		if statusCode >= 400 && statusCode < 500 {
 			return "BadRequestError"
