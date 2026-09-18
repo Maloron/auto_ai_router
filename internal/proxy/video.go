@@ -76,15 +76,12 @@ func (r *VideoPrincipalResolver) ResolvePrincipal(w http.ResponseWriter, req *ht
 }
 
 func videoAdmissionHasUnsupportedLimits(info *dbmodels.TokenInfo) bool {
-	if info == nil {
-		return false
+	for _, level := range budgetLevels(info) {
+		if level.maxBudget != nil || level.rpm != nil || level.tpm != nil {
+			return true
+		}
 	}
-	return info.MaxBudget != nil || info.UserMaxBudget != nil || info.TeamMaxBudget != nil ||
-		info.OrgMaxBudget != nil || info.TeamMemberMaxBudget != nil || info.OrgMemberMaxBudget != nil ||
-		info.TPMLimit != nil || info.RPMLimit != nil || info.UserTPMLimit != nil || info.UserRPMLimit != nil ||
-		info.TeamTPMLimit != nil || info.TeamRPMLimit != nil || info.OrgTPMLimit != nil || info.OrgRPMLimit != nil ||
-		info.TeamMemberTPMLimit != nil || info.TeamMemberRPMLimit != nil || info.OrgMemberTPMLimit != nil ||
-		info.OrgMemberRPMLimit != nil
+	return false
 }
 
 type VideoBilling struct {

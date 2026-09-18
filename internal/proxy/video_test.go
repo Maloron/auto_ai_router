@@ -45,6 +45,9 @@ func TestVideoPrincipalResolverUsesOrganizationPolicyPrice(t *testing.T) {
 			DirectOrganizationID: "org-1", OrganizationID: "org-1",
 		},
 	}}
+	// Personal user limits do not apply to keys assigned to a team.
+	userBudget := 10.0
+	db.tokens["video-key"].UserMaxBudget = &userBudget
 	builder := NewTestProxyBuilder().WithMasterKey("master-key")
 	builder.config.ModelManager = manager
 	builder.config.OrganizationPolicies = policies
@@ -70,6 +73,55 @@ func TestVideoPrincipalResolverUsesOrganizationPolicyPrice(t *testing.T) {
 	_, err = NewVideoPrincipalResolver(prx).ResolvePrincipal(limitedResponse, limitedRequest, "runway/gen4_turbo")
 	require.Error(t, err)
 	require.Equal(t, http.StatusServiceUnavailable, limitedResponse.Code)
+}
+
+func TestVideoAdmissionApplicableLimits(t *testing.T) {
+	budget := 10.0
+	rate := int64(10)
+	for _, test := range []struct {
+		name string
+		set  func(*dbmodels.TokenInfo)
+	}{
+		{"key budget", func(info *dbmodels.TokenInfo) { info.MaxBudget = &budget }},
+		{"key rpm", func(info *dbmodels.TokenInfo) { info.RPMLimit = &rate }},
+		{"key tpm", func(info *dbmodels.TokenInfo) { info.TPMLimit = &rate }},
+		{"team budget", func(info *dbmodels.TokenInfo) { info.TeamMaxBudget = &budget }},
+		{"team rpm", func(info *dbmodels.TokenInfo) { info.TeamRPMLimit = &rate }},
+		{"team tpm", func(info *dbmodels.TokenInfo) { info.TeamTPMLimit = &rate }},
+		{"organization budget", func(info *dbmodels.TokenInfo) { info.OrgMaxBudget = &budget }},
+		{"organization rpm", func(info *dbmodels.TokenInfo) { info.OrgRPMLimit = &rate }},
+		{"organization tpm", func(info *dbmodels.TokenInfo) { info.OrgTPMLimit = &rate }},
+		{"team member budget", func(info *dbmodels.TokenInfo) { info.TeamMemberMaxBudget = &budget }},
+		{"team member rpm", func(info *dbmodels.TokenInfo) { info.TeamMemberRPMLimit = &rate }},
+		{"team member tpm", func(info *dbmodels.TokenInfo) { info.TeamMemberTPMLimit = &rate }},
+		{"organization member budget", func(info *dbmodels.TokenInfo) { info.OrgMemberMaxBudget = &budget }},
+		{"organization member rpm", func(info *dbmodels.TokenInfo) { info.OrgMemberRPMLimit = &rate }},
+		{"organization member tpm", func(info *dbmodels.TokenInfo) { info.OrgMemberTPMLimit = &rate }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			info := &dbmodels.TokenInfo{Token: "key", TeamID: "team", UserID: "user", OrganizationID: "org"}
+			test.set(info)
+			require.True(t, videoAdmissionHasUnsupportedLimits(info))
+		})
+	}
+	for _, test := range []struct {
+		name string
+		set  func(*dbmodels.TokenInfo)
+	}{
+		{"budget", func(info *dbmodels.TokenInfo) { info.UserMaxBudget = &budget }},
+		{"rpm", func(info *dbmodels.TokenInfo) { info.UserRPMLimit = &rate }},
+		{"tpm", func(info *dbmodels.TokenInfo) { info.UserTPMLimit = &rate }},
+	} {
+		t.Run("personal user "+test.name, func(t *testing.T) {
+			info := &dbmodels.TokenInfo{Token: "key", UserID: "user"}
+			test.set(info)
+			require.True(t, videoAdmissionHasUnsupportedLimits(info))
+			info.TeamID = "team"
+			require.False(t, videoAdmissionHasUnsupportedLimits(info))
+		})
+	}
+	require.False(t, videoAdmissionHasUnsupportedLimits(nil))
+	require.False(t, videoAdmissionHasUnsupportedLimits(&dbmodels.TokenInfo{}))
 }
 
 func (c *videoSpendCommitter) CommitSpend(_ context.Context, entry *dbmodels.SpendLogEntry) (litellmdb.SpendCommitResult, error) {
