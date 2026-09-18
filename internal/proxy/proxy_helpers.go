@@ -56,6 +56,31 @@ func isClientContextCanceled(r *http.Request) bool {
 	return errors.Is(r.Context().Err(), context.Canceled)
 }
 
+// isClientCanceledTransportError reports whether attemptErr -- the error a
+// specific credential attempt just failed with -- was actually *caused* by
+// the client disconnecting, as opposed to r's context merely being canceled
+// at some point during a longer retry sequence for an unrelated reason.
+//
+// The two checks answer different questions and neither alone is enough:
+// isClientContextCanceled(r) alone would also fire for a credential attempt
+// that failed for a genuine, unrelated reason (e.g. a real ECONNREFUSED)
+// simply because the client *happened* to also give up around the same
+// time -- plausible whenever AIR's retry/fallback sequence takes long enough
+// that the client's own (often shorter) timeout elapses before AIR finishes
+// working through a real outage. Misclassifying that as client_canceled
+// would hide a genuine multi-credential outage from fail2ban/ERROR-level
+// alerting exactly when it matters most. Conversely, checking only
+// errors.Is(attemptErr, context.Canceled) without isClientContextCanceled(r)
+// would fire on a transport that returns a bare context.Canceled for
+// reasons unrelated to r's own context (see the "transport error" case in
+// client_error_messages_test.go, which relies on exactly this not
+// happening). Requiring both pins the classification to the one case that
+// actually matters: THIS attempt failed specifically because the client's
+// own context is what unblocked p.client.Do.
+func isClientCanceledTransportError(r *http.Request, attemptErr error) bool {
+	return errors.Is(attemptErr, context.Canceled) && isClientContextCanceled(r)
+}
+
 // isClientDisconnectError checks if an error indicates the client disconnected
 // (broken pipe, connection reset, context canceled). These are expected during
 // normal operation and should be logged at lower severity.

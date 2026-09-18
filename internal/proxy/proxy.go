@@ -686,7 +686,7 @@ func (p *Proxy) executeProxyRequest(
 	// Send request
 	resp, err := p.client.Do(proxyReq) //nolint:gosec // G704: same targetURL as above, host isn't attacker-controlled
 	if err != nil {
-		if isClientContextCanceled(r) {
+		if isClientCanceledTransportError(r, err) {
 			// The client is already gone -- don't count this against the
 			// credential's error rate, and let the caller's retry loop know
 			// (via the same check) that trying another credential is
@@ -1042,7 +1042,7 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request) {
 			resp, fwdErr := p.forwardToProxy(w, r, modelID, cred, proxyBody, start)
 			lastProxyErr = fwdErr
 			if fwdErr != nil {
-				if isClientContextCanceled(r) {
+				if isClientCanceledTransportError(r, fwdErr) {
 					// No point trying another same-type credential against
 					// an already-dead client context; fall straight to the
 					// "no upstream response" block below.
@@ -1123,7 +1123,7 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request) {
 			statusMessage := "Bad Gateway"
 			errorMsg := fmt.Sprintf("Proxy forward error: %v", lastProxyErr)
 			errorOrigin := ErrorOriginProxyForwardError
-			clientCanceled := isClientContextCanceled(r)
+			clientCanceled := isClientCanceledTransportError(r, lastProxyErr)
 			switch {
 			case clientCanceled:
 				statusCode = StatusClientClosedRequest
@@ -1827,7 +1827,7 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request) {
 		attemptedCreds[cred.Name] = true
 		resp, doErr = p.client.Do(proxyReq) //nolint:gosec // G704: same targetURL as the request built above, host isn't attacker-controlled
 		if doErr != nil {
-			if isClientContextCanceled(r) {
+			if isClientCanceledTransportError(r, doErr) {
 				// The client is already gone -- trying another credential
 				// would just fail the same way against a dead context, and
 				// counting this attempt against cred's fail2ban/error-rate
@@ -2010,7 +2010,7 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request) {
 		statusMessage := "Bad Gateway"
 		errorOrigin := ErrorOriginAllAttemptsExhausted
 		errorMsg := "All provider attempts failed"
-		clientCanceled := isClientContextCanceled(r)
+		clientCanceled := isClientCanceledTransportError(r, transportErr)
 		switch {
 		case clientCanceled:
 			// The client left before any credential attempt produced a
