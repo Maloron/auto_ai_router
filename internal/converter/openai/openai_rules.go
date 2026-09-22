@@ -3,6 +3,7 @@ package openai
 import (
 	"bytes"
 	"encoding/json"
+	"slices"
 	"strings"
 )
 
@@ -74,6 +75,71 @@ func ReplaceModelInBody(body []byte, oldModel, newModel string) []byte {
 	}
 
 	return body
+}
+
+// defaultParamSynonymGroups lists sets of request keys that set the same value. A
+// client that sent any member of a group has already chosen it, so a default keyed
+// on another member must not be added too: max_tokens next to max_completion_tokens
+// is ambiguous for the server. Grouped (rather than keyed one-directionally) so the
+// check works regardless of which spelling the default itself happens to use.
+var defaultParamSynonymGroups = [][]string{
+	{"max_tokens", "max_completion_tokens"},
+}
+
+// ApplyDefaultParams sets each key of defaults that is absent from the top level of a
+// JSON request body, leaving every key the client sent untouched. It mirrors LiteLLM,
+// where a deployment's litellm_params are merged under the request kwargs. Values
+// already in the body keep their exact bytes; the body is returned as is when there is
+// nothing to add or it is not a JSON object.
+func ApplyDefaultParams(body []byte, defaults map[string]any) []byte {
+	if len(defaults) == 0 || len(body) == 0 {
+		return body
+	}
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(body, &top); err != nil || top == nil {
+		return body
+	}
+	changed := false
+	for key, value := range defaults {
+		if clientSetParam(top, key) {
+			continue
+		}
+		raw, err := json.Marshal(value)
+		if err != nil {
+			continue
+		}
+		top[key] = raw
+		changed = true
+	}
+	if !changed {
+		return body
+	}
+	out, err := json.Marshal(top)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+// clientSetParam reports whether the request already carries key or a synonym of it.
+func clientSetParam(top map[string]json.RawMessage, key string) bool {
+	if _, present := top[key]; present {
+		return true
+	}
+	for _, group := range defaultParamSynonymGroups {
+		if !slices.Contains(group, key) {
+			continue
+		}
+		for _, synonym := range group {
+			if synonym == key {
+				continue
+			}
+			if _, present := top[synonym]; present {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // --- Model family parameter mappings ---
