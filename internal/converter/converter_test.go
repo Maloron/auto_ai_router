@@ -66,6 +66,88 @@ func TestProviderConverter_RequestFrom_PreservesCacheSaltForRealOpenAIHost(t *te
 	}
 }
 
+// TestProviderConverter_RequestFrom_PreservesCacheSaltForVLLM covers the vLLM
+// exception to shouldStripCacheSalt: self-hosted vLLM is confirmed to support
+// cache_salt for its own prefix-cache partitioning, unlike other non-OpenAI
+// servers sharing the same default RequestFrom bucket.
+func TestProviderConverter_RequestFrom_PreservesCacheSaltForVLLM(t *testing.T) {
+	body := []byte(`{"model":"qwen3-32b","cache_salt":"partition-1","messages":[]}`)
+
+	c := New(config.ProviderTypeVLLM, RequestMode{
+		ModelID: "qwen3-32b",
+		BaseURL: "https://vllm.internal.example.com/v1",
+	})
+	got, err := c.RequestFrom(body)
+	if err != nil {
+		t.Fatalf("RequestFrom error: %v", err)
+	}
+	m := mustUnmarshal[map[string]any](t, got)
+	if v, present := m["cache_salt"]; !present || v != "partition-1" {
+		t.Fatalf("expected cache_salt to be preserved for vLLM, got %s", string(got))
+	}
+}
+
+// TestProviderConverter_RequestFrom_StripsCacheSaltForAnthropicMessagesPassthrough
+// covers the MessagesPassthrough branch: a client can still send an
+// OpenAI-only field like cache_salt on a /v1/messages request that's
+// forwarded natively to Anthropic (or CometAPI/ProMan in Anthropic-protocol
+// mode) without going through OpenAIToAnthropic at all.
+func TestProviderConverter_RequestFrom_StripsCacheSaltForAnthropicMessagesPassthrough(t *testing.T) {
+	body := []byte(`{"model":"claude-test","cache_salt":"partition-1","messages":[]}`)
+
+	c := New(config.ProviderTypeAnthropic, RequestMode{
+		ModelID:             "claude-test",
+		MessagesPassthrough: true,
+	})
+	got, err := c.RequestFrom(body)
+	if err != nil {
+		t.Fatalf("RequestFrom error: %v", err)
+	}
+	m := mustUnmarshal[map[string]any](t, got)
+	if _, present := m["cache_salt"]; present {
+		t.Fatalf("expected cache_salt to be stripped for Anthropic messages passthrough, got %s", string(got))
+	}
+}
+
+// TestProviderConverter_RequestFrom_StripsCacheSaltForBedrockOpenAICompatible
+// covers the Bedrock non-Anthropic branch (OpenAI-compatible passthrough,
+// e.g. GLM/Llama): body forwards mostly as-is, but a stray cache_salt must
+// still be removed since Bedrock's OpenAI-compatible layer rejects it.
+func TestProviderConverter_RequestFrom_StripsCacheSaltForBedrockOpenAICompatible(t *testing.T) {
+	body := []byte(`{"model":"zai.glm-4.7-flash","cache_salt":"partition-1","messages":[]}`)
+
+	c := New(config.ProviderTypeBedrock, RequestMode{ModelID: "zai.glm-4.7-flash"})
+	got, err := c.RequestFrom(body)
+	if err != nil {
+		t.Fatalf("RequestFrom error: %v", err)
+	}
+	m := mustUnmarshal[map[string]any](t, got)
+	if _, present := m["cache_salt"]; present {
+		t.Fatalf("expected cache_salt to be stripped for Bedrock OpenAI-compatible passthrough, got %s", string(got))
+	}
+}
+
+// TestProviderConverter_RequestFrom_StripsCacheSaltForEmbeddings covers the
+// IsEmbeddings default branch (OpenAI/Proxy/AIR/etc. embeddings passthrough),
+// which previously bypassed cache_salt stripping entirely.
+func TestProviderConverter_RequestFrom_StripsCacheSaltForEmbeddings(t *testing.T) {
+	body := []byte(`{"model":"text-embedding-3-small","cache_salt":"partition-1","input":"hi"}`)
+
+	c := New(config.ProviderTypeOpenAI, RequestMode{
+		IsEmbeddings: true,
+		ModelID:      "text-embedding-3-small",
+		BaseURL:      "https://api.cometapi.com/v1",
+	})
+	got, err := c.RequestFrom(body)
+	if err != nil {
+		t.Fatalf("RequestFrom error: %v", err)
+	}
+	m := mustUnmarshal[map[string]any](t, got)
+	if _, present := m["cache_salt"]; present {
+		t.Fatalf("expected cache_salt to be stripped for embeddings on a non-OpenAI host, got %s", string(got))
+	}
+}
+
 func TestProviderConverter_RequestFrom_Anthropic(t *testing.T) {
 	body := mustJSON(t, minimalOpenAIChatRequest())
 

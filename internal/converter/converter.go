@@ -121,6 +121,23 @@ func New(providerType config.ProviderType, mode RequestMode) *ProviderConverter 
 	}
 }
 
+// shouldStripCacheSalt reports whether cache_salt must be removed from the
+// request body before forwarding. cache_salt is a genuine OpenAI Chat
+// Completions parameter (partitions prompt caching); most other servers that
+// merely speak the OpenAI wire protocol -- aggregators, strict OpenAI-shaped
+// deployments -- reject it outright with a 400 ("cache_salt: Extra inputs
+// are not permitted") rather than ignoring an unknown field. Strip it
+// everywhere except: genuine api.openai.com (see IsRealOpenAIHost), and
+// self-hosted vLLM (config.ProviderTypeVLLM), which is confirmed to support
+// the parameter for its own prefix-cache partitioning -- stripping it there
+// would silently disable that partitioning instead of avoiding an error.
+func (c *ProviderConverter) shouldStripCacheSalt() bool {
+	if c.providerType == config.ProviderTypeVLLM {
+		return false
+	}
+	return !openaiconv.IsRealOpenAIHost(c.mode.BaseURL)
+}
+
 // RequestFrom converts an OpenAI-format request body to the provider-specific format.
 // Returns the original body unchanged for OpenAI-compatible providers (passthrough).
 func (c *ProviderConverter) RequestFrom(body []byte) ([]byte, error) {
@@ -140,6 +157,9 @@ func (c *ProviderConverter) RequestFrom(body []byte) ([]byte, error) {
 		case config.ProviderTypeBedrock:
 			return nil, errors.New("bedrock does not support embeddings")
 		default:
+			if c.shouldStripCacheSalt() {
+				body = openaiconv.StripCacheSalt(body)
+			}
 			return body, nil
 		}
 	}
@@ -154,7 +174,11 @@ func (c *ProviderConverter) RequestFrom(body []byte) ([]byte, error) {
 		}
 		if c.mode.MessagesPassthrough {
 			// body is already native Anthropic Messages JSON (model field already
-			// resolved to c.mode.ModelID upstream) — forward as-is.
+			// resolved to c.mode.ModelID upstream) — forward as-is, minus any
+			// stray OpenAI-only fields a client sent anyway (see shouldStripCacheSalt).
+			if c.shouldStripCacheSalt() {
+				body = openaiconv.StripCacheSalt(body)
+			}
 			return body, nil
 		}
 		return anthropic.OpenAIToAnthropic(body, c.mode.ModelID, c.providerType == config.ProviderTypeAnthropic)
@@ -164,6 +188,9 @@ func (c *ProviderConverter) RequestFrom(body []byte) ([]byte, error) {
 		}
 		if isAnthropicBedrockModel(c.mode.ModelID) {
 			return anthropic.OpenAIToBedrock(body, c.mode.ModelID)
+		}
+		if c.shouldStripCacheSalt() {
+			body = openaiconv.StripCacheSalt(body)
 		}
 		return body, nil
 	default:
@@ -175,14 +202,10 @@ func (c *ProviderConverter) RequestFrom(body []byte) ([]byte, error) {
 			body = openaiconv.ConvertWebSearchTools(body)
 		}
 
-		// cache_salt is a genuine OpenAI Chat Completions parameter, but most
-		// other servers that merely speak the OpenAI wire protocol (behind
-		// this same "openai"-typed default bucket: aggregators, self-hosted
-		// vLLM deployments, etc.) reject it outright with a 400 ("cache_salt:
-		// Extra inputs are not permitted") rather than ignoring an unknown
-		// field. Forward it only when the credential's base_url is genuinely
-		// OpenAI's own API.
-		if !openaiconv.IsRealOpenAIHost(c.mode.BaseURL) {
+		// See shouldStripCacheSalt: strip for everyone in this default bucket
+		// (aggregators, strict OpenAI-shaped deployments, ...) except genuine
+		// api.openai.com and self-hosted vLLM.
+		if c.shouldStripCacheSalt() {
 			body = openaiconv.StripCacheSalt(body)
 		}
 
