@@ -390,9 +390,19 @@ func sanitizeJSONRequestBody(body []byte, isMessagesAPI bool) (sanitizedRequestB
 
 	// Extract session ID before removing LiteLLM-only request metadata.
 	result.SessionID = extractSessionIDFromRawBody(reqBody)
-	if _, exists := reqBody["litellm_session_id"]; exists {
-		delete(reqBody, "litellm_session_id")
-		changed = true
+	// litellm_session_id/session_id only ever drive AIR's own sticky-routing
+	// decision (already captured above into result.SessionID); no provider
+	// understands either as a wire-protocol field, and both are gone from
+	// reqBody before routing even happens, so removing them here can't affect
+	// which credential gets picked. inference_geo and trace are the same
+	// shape: internal-only metadata no provider needs, safe to drop for
+	// everyone regardless of destination -- unlike cache_salt/stream_options,
+	// there's no backend confirmed to actually use these.
+	for _, key := range [...]string{"litellm_session_id", "session_id", "inference_geo", "trace"} {
+		if _, exists := reqBody[key]; exists {
+			delete(reqBody, key)
+			changed = true
+		}
 	}
 
 	// Check if this is a streaming request

@@ -316,6 +316,30 @@ func TestSanitizeAndExtractRequestBody_PreservesClientStreamOptionsAtIngress(t *
 	assert.Equal(t, map[string]interface{}{"include_usage": true, "continuous_usage_stats": true}, streamOptions)
 }
 
+// TestSanitizeAndExtractRequestBody_StripsUnusedClientMetadata covers
+// litellm_session_id/session_id/inference_geo/trace: none of these are
+// understood by any provider on the wire, and session_id's value is already
+// captured into result.SessionID (used for AIR's own sticky-routing
+// decision) before the key is removed -- so, unlike cache_salt/stream_options,
+// there's no destination-aware exception to make, and this runs unconditionally
+// at ingress rather than per-provider in converter.RequestFrom.
+func TestSanitizeAndExtractRequestBody_StripsUnusedClientMetadata(t *testing.T) {
+	body := []byte(`{"model":"gpt-4","session_id":"sess-123","litellm_session_id":"legacy-sess","inference_geo":"eu","trace":{"id":"abc"},"messages":[{"role":"user","content":"hi"}]}`)
+
+	result, err := sanitizeAndExtractRequestBody(body, "application/json", false)
+	require.NoError(t, err)
+
+	assert.Equal(t, "legacy-sess", result.SessionID, "expected litellm_session_id (checked first) to still be captured before removal")
+
+	var raw map[string]interface{}
+	require.NoError(t, json.Unmarshal(result.Body, &raw))
+	assert.NotContains(t, raw, "session_id")
+	assert.NotContains(t, raw, "litellm_session_id")
+	assert.NotContains(t, raw, "inference_geo")
+	assert.NotContains(t, raw, "trace")
+	assert.Contains(t, raw, "messages", "unrelated fields must survive")
+}
+
 // TestExtractTokenUsageFromPayloads_BatchedSSEMergesUsage reproduces a
 // real-world batching case: upstream flushes a web-search-only annotation
 // frame and the final usage frame close enough together that a single
