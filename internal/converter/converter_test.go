@@ -418,9 +418,13 @@ func TestProviderConverter_RequestFrom_PreservesVLLMOnlySamplingParamsForVLLM(t 
 	}
 }
 
-// TestProviderConverter_RequestFrom_StripsVLLMOnlySamplingParamsForAnthropicMessagesPassthrough
-// covers the MessagesPassthrough branch.
-func TestProviderConverter_RequestFrom_StripsVLLMOnlySamplingParamsForAnthropicMessagesPassthrough(t *testing.T) {
+// TestProviderConverter_RequestFrom_PreservesVLLMOnlySamplingParamsForAnthropicMessagesPassthrough
+// covers the MessagesPassthrough branch: shouldStripVLLMOnlySamplingParams
+// only strips for providerType == ProviderTypeOpenAI, and this branch's
+// providerType is always Anthropic/CometAPI/ProMan, so a stray
+// repetition_penalty a client sent anyway is left alone here (unlike
+// cache_salt/stream_options/plugins, which this branch does still strip).
+func TestProviderConverter_RequestFrom_PreservesVLLMOnlySamplingParamsForAnthropicMessagesPassthrough(t *testing.T) {
 	body := []byte(`{"model":"claude-test","repetition_penalty":1.1,"messages":[]}`)
 
 	c := New(config.ProviderTypeAnthropic, RequestMode{
@@ -432,15 +436,16 @@ func TestProviderConverter_RequestFrom_StripsVLLMOnlySamplingParamsForAnthropicM
 		t.Fatalf("RequestFrom error: %v", err)
 	}
 	m := mustUnmarshal[map[string]any](t, got)
-	if _, present := m["repetition_penalty"]; present {
-		t.Fatalf("expected repetition_penalty to be stripped for Anthropic messages passthrough, got %s", string(got))
+	if v, present := m["repetition_penalty"]; !present || v != 1.1 {
+		t.Fatalf("expected repetition_penalty to be left untouched for Anthropic messages passthrough, got %s", string(got))
 	}
 }
 
-// TestProviderConverter_RequestFrom_StripsVLLMOnlySamplingParamsForBedrockOpenAICompatible
+// TestProviderConverter_RequestFrom_PreservesVLLMOnlySamplingParamsForBedrockOpenAICompatible
 // covers the Bedrock non-Anthropic branch (OpenAI-compatible passthrough,
-// e.g. GLM/Llama): same rule as the default branch applies here too.
-func TestProviderConverter_RequestFrom_StripsVLLMOnlySamplingParamsForBedrockOpenAICompatible(t *testing.T) {
+// e.g. GLM/Llama): providerType is always ProviderTypeBedrock here, never
+// ProviderTypeOpenAI, so shouldStripVLLMOnlySamplingParams never strips.
+func TestProviderConverter_RequestFrom_PreservesVLLMOnlySamplingParamsForBedrockOpenAICompatible(t *testing.T) {
 	body := []byte(`{"model":"zai.glm-4.7-flash","repetition_penalty":1.1,"messages":[]}`)
 
 	c := New(config.ProviderTypeBedrock, RequestMode{ModelID: "zai.glm-4.7-flash"})
@@ -449,8 +454,30 @@ func TestProviderConverter_RequestFrom_StripsVLLMOnlySamplingParamsForBedrockOpe
 		t.Fatalf("RequestFrom error: %v", err)
 	}
 	m := mustUnmarshal[map[string]any](t, got)
-	if _, present := m["repetition_penalty"]; present {
-		t.Fatalf("expected repetition_penalty to be stripped for Bedrock OpenAI-compatible passthrough, got %s", string(got))
+	if v, present := m["repetition_penalty"]; !present || v != 1.1 {
+		t.Fatalf("expected repetition_penalty to be left untouched for Bedrock OpenAI-compatible passthrough, got %s", string(got))
+	}
+}
+
+// TestProviderConverter_RequestFrom_PreservesVLLMOnlySamplingParamsForProxyLikeCredentials
+// covers ProviderTypeProxy/ProviderTypeAIR (ProviderType.IsProxyLike): these
+// forward to another router/AIR instance this one doesn't control, which
+// could itself be fronting vLLM -- stripping here would discard a param the
+// actual destination understands, on pure speculation. Only a credential
+// confirmed to be type: "openai" is safe to strip for.
+func TestProviderConverter_RequestFrom_PreservesVLLMOnlySamplingParamsForProxyLikeCredentials(t *testing.T) {
+	body := []byte(`{"model":"some-model","repetition_penalty":1.1,"messages":[]}`)
+
+	for _, providerType := range []config.ProviderType{config.ProviderTypeProxy, config.ProviderTypeAIR} {
+		c := New(providerType, RequestMode{ModelID: "some-model"})
+		got, err := c.RequestFrom(body)
+		if err != nil {
+			t.Fatalf("%s: RequestFrom error: %v", providerType, err)
+		}
+		m := mustUnmarshal[map[string]any](t, got)
+		if v, present := m["repetition_penalty"]; !present || v != 1.1 {
+			t.Fatalf("%s: expected repetition_penalty to be left untouched, got %s", providerType, string(got))
+		}
 	}
 }
 

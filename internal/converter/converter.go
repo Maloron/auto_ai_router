@@ -164,10 +164,22 @@ func (c *ProviderConverter) shouldStripStreamOptionsExtras() bool {
 // itself supports configuring as per-model defaults for vLLM deployments
 // (see litellmdb ChatTemplateKwargs/RepetitionPenalty). Confirmed directly
 // against api.openai.com that all three get the same "Unknown parameter"
-// 400 cache_salt/stream_options/plugins do. Same shape as those: strip for
-// everyone except self-hosted vLLM (see RequestMode.IsVLLM).
+// 400 cache_salt/stream_options/plugins do.
+//
+// Narrower than shouldStripCacheSalt/shouldStripStreamOptionsExtras: this
+// only strips for providerType == ProviderTypeOpenAI, not every destination
+// sharing the same RequestFrom branches. ProviderTypeProxy and
+// ProviderTypeAIR (see ProviderType.IsProxyLike) forward to another AIR
+// instance or a dynamically-discovered backend AIR itself doesn't control --
+// that far end could be fronting vLLM, so stripping here would risk
+// discarding a param the actual destination understands, on our own
+// speculation about what's downstream. Only a credential explicitly
+// configured as type: "openai" (confirmed, not merely assumed, OpenAI wire
+// protocol with no further chaining) is safe to strip for unconditionally.
+// Bedrock and Anthropic/CometAPI/ProMan already fall outside this by virtue
+// of providerType never being ProviderTypeOpenAI there.
 func (c *ProviderConverter) shouldStripVLLMOnlySamplingParams() bool {
-	return !c.mode.IsVLLM
+	return !c.mode.IsVLLM && c.providerType == config.ProviderTypeOpenAI
 }
 
 // shouldStripOpenRouterOnlyFields reports whether `plugins` and `provider`
@@ -240,9 +252,10 @@ func (c *ProviderConverter) RequestFrom(body []byte) ([]byte, error) {
 			if c.shouldStripOpenRouterOnlyFields() {
 				body = openaiconv.StripOpenRouterOnlyFields(body)
 			}
-			if c.shouldStripVLLMOnlySamplingParams() {
-				body = openaiconv.StripVLLMOnlySamplingParams(body)
-			}
+			// No shouldStripVLLMOnlySamplingParams call here: providerType is
+			// always Anthropic/CometAPI/ProMan in this branch, never
+			// ProviderTypeOpenAI, so it would always be a no-op (see that
+			// method's doc comment).
 			return openaiconv.StripStreamOptions(body), nil
 		}
 		return anthropic.OpenAIToAnthropic(body, c.mode.ModelID, c.providerType == config.ProviderTypeAnthropic)
@@ -262,9 +275,9 @@ func (c *ProviderConverter) RequestFrom(body []byte) ([]byte, error) {
 		if c.shouldStripOpenRouterOnlyFields() {
 			body = openaiconv.StripOpenRouterOnlyFields(body)
 		}
-		if c.shouldStripVLLMOnlySamplingParams() {
-			body = openaiconv.StripVLLMOnlySamplingParams(body)
-		}
+		// No shouldStripVLLMOnlySamplingParams call here: providerType is
+		// always ProviderTypeBedrock in this branch, never ProviderTypeOpenAI,
+		// so it would always be a no-op (see that method's doc comment).
 		return body, nil
 	default:
 		// ProviderTypeOpenAI, ProviderTypeProxy, ProviderTypeAIR, and others:
@@ -301,7 +314,10 @@ func (c *ProviderConverter) RequestFrom(body []byte) ([]byte, error) {
 
 		// See shouldStripVLLMOnlySamplingParams: chat_template_kwargs/
 		// repetition_penalty/length_penalty are vLLM sampling extensions --
-		// strip for everyone in this default bucket except vLLM itself.
+		// strip only when this bucket's provider is confirmed genuine OpenAI,
+		// never for ProviderTypeProxy/ProviderTypeAIR (IsProxyLike), which
+		// forward to a router this one doesn't control and could itself be
+		// fronting vLLM.
 		if c.shouldStripVLLMOnlySamplingParams() {
 			body = openaiconv.StripVLLMOnlySamplingParams(body)
 		}
