@@ -138,6 +138,18 @@ func (c *ProviderConverter) shouldStripCacheSalt() bool {
 	return !openaiconv.IsRealOpenAIHost(c.mode.BaseURL)
 }
 
+// shouldStripStreamOptionsExtras reports whether a streaming request's
+// stream_options object must be rebuilt down to just {"include_usage": true}
+// before forwarding, discarding provider-specific extension keys (e.g.
+// vLLM's continuous_usage_stats) the ingress sanitizer otherwise preserves.
+// Unlike cache_salt, real OpenAI itself doesn't understand these extension
+// keys either -- only self-hosted vLLM (config.ProviderTypeVLLM) does, so
+// the exception is narrower: strip for everyone except vLLM, not "everyone
+// except vLLM and genuine OpenAI".
+func (c *ProviderConverter) shouldStripStreamOptionsExtras() bool {
+	return c.providerType != config.ProviderTypeVLLM
+}
+
 // RequestFrom converts an OpenAI-format request body to the provider-specific format.
 // Returns the original body unchanged for OpenAI-compatible providers (passthrough).
 func (c *ProviderConverter) RequestFrom(body []byte) ([]byte, error) {
@@ -175,11 +187,16 @@ func (c *ProviderConverter) RequestFrom(body []byte) ([]byte, error) {
 		if c.mode.MessagesPassthrough {
 			// body is already native Anthropic Messages JSON (model field already
 			// resolved to c.mode.ModelID upstream) — forward as-is, minus any
-			// stray OpenAI-only fields a client sent anyway (see shouldStripCacheSalt).
+			// stray OpenAI-only fields a client sent anyway (see shouldStripCacheSalt),
+			// and minus stream_options: unlike the OpenAI wire protocol bucket, native
+			// Anthropic has no stream_options concept at all (rejects the whole
+			// field, not just unrecognized keys inside it) -- a client can still
+			// send it directly on a /v1/messages request since the ingress
+			// sanitizer already skips stream_options injection for isMessagesAPI.
 			if c.shouldStripCacheSalt() {
 				body = openaiconv.StripCacheSalt(body)
 			}
-			return body, nil
+			return openaiconv.StripStreamOptions(body), nil
 		}
 		return anthropic.OpenAIToAnthropic(body, c.mode.ModelID, c.providerType == config.ProviderTypeAnthropic)
 	case config.ProviderTypeBedrock:
@@ -191,6 +208,9 @@ func (c *ProviderConverter) RequestFrom(body []byte) ([]byte, error) {
 		}
 		if c.shouldStripCacheSalt() {
 			body = openaiconv.StripCacheSalt(body)
+		}
+		if c.mode.IsStreaming && c.shouldStripStreamOptionsExtras() {
+			body = openaiconv.RebuildStreamOptionsIncludeUsageOnly(body)
 		}
 		return body, nil
 	default:
@@ -207,6 +227,14 @@ func (c *ProviderConverter) RequestFrom(body []byte) ([]byte, error) {
 		// api.openai.com and self-hosted vLLM.
 		if c.shouldStripCacheSalt() {
 			body = openaiconv.StripCacheSalt(body)
+		}
+
+		// See shouldStripStreamOptionsExtras: the ingress sanitizer preserves
+		// whatever stream_options object the client sent (plus a guaranteed
+		// include_usage=true); strip it down to just include_usage here for
+		// every destination except vLLM, which understands the extra keys.
+		if c.mode.IsStreaming && c.shouldStripStreamOptionsExtras() {
+			body = openaiconv.RebuildStreamOptionsIncludeUsageOnly(body)
 		}
 
 		if c.mode.IsImageGeneration || c.mode.IsImageEdit {

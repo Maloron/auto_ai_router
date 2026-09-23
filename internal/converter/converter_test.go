@@ -148,6 +148,135 @@ func TestProviderConverter_RequestFrom_StripsCacheSaltForEmbeddings(t *testing.T
 	}
 }
 
+// TestProviderConverter_RequestFrom_StripsStreamOptionsExtrasForOpenAI covers
+// the "default" (OpenAI-compatible) branch: real api.openai.com doesn't
+// understand vLLM's stream_options.continuous_usage_stats extension key
+// (rejects it outright with a 400), so it must be stripped down to just
+// include_usage regardless of how genuine the destination host is -- unlike
+// cache_salt, there's no "real OpenAI" exception here.
+func TestProviderConverter_RequestFrom_StripsStreamOptionsExtrasForOpenAI(t *testing.T) {
+	body := []byte(`{"model":"gpt-5-mini","stream":true,"stream_options":{"include_usage":true,"continuous_usage_stats":true},"messages":[]}`)
+
+	c := New(config.ProviderTypeOpenAI, RequestMode{
+		ModelID:     "gpt-5-mini",
+		BaseURL:     "https://api.openai.com/v1",
+		IsStreaming: true,
+	})
+	got, err := c.RequestFrom(body)
+	if err != nil {
+		t.Fatalf("RequestFrom error: %v", err)
+	}
+	m := mustUnmarshal[map[string]any](t, got)
+	streamOptions, ok := m["stream_options"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected stream_options map, got %T", m["stream_options"])
+	}
+	if len(streamOptions) != 1 || streamOptions["include_usage"] != true {
+		t.Fatalf("expected stream_options to contain only include_usage=true, got %v", streamOptions)
+	}
+}
+
+// TestProviderConverter_RequestFrom_PreservesStreamOptionsExtrasForVLLM covers
+// the vLLM exception: self-hosted vLLM understands continuous_usage_stats
+// (its own streaming-usage extension), so RequestFrom must leave a client's
+// stream_options object untouched instead of stripping it down.
+func TestProviderConverter_RequestFrom_PreservesStreamOptionsExtrasForVLLM(t *testing.T) {
+	body := []byte(`{"model":"qwen3-32b","stream":true,"stream_options":{"include_usage":true,"continuous_usage_stats":true},"messages":[]}`)
+
+	c := New(config.ProviderTypeVLLM, RequestMode{
+		ModelID:     "qwen3-32b",
+		BaseURL:     "https://vllm.internal.example.com/v1",
+		IsStreaming: true,
+	})
+	got, err := c.RequestFrom(body)
+	if err != nil {
+		t.Fatalf("RequestFrom error: %v", err)
+	}
+	m := mustUnmarshal[map[string]any](t, got)
+	streamOptions, ok := m["stream_options"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected stream_options map, got %T", m["stream_options"])
+	}
+	if streamOptions["continuous_usage_stats"] != true {
+		t.Fatalf("expected continuous_usage_stats to be preserved for vLLM, got %v", streamOptions)
+	}
+}
+
+// TestProviderConverter_RequestFrom_StripsStreamOptionsExtrasForBedrockOpenAICompatible
+// covers the Bedrock non-Anthropic branch (OpenAI-compatible passthrough,
+// e.g. GLM/Llama): same rule as the default branch applies here too.
+func TestProviderConverter_RequestFrom_StripsStreamOptionsExtrasForBedrockOpenAICompatible(t *testing.T) {
+	body := []byte(`{"model":"zai.glm-4.7-flash","stream":true,"stream_options":{"include_usage":true,"continuous_usage_stats":true},"messages":[]}`)
+
+	c := New(config.ProviderTypeBedrock, RequestMode{
+		ModelID:     "zai.glm-4.7-flash",
+		IsStreaming: true,
+	})
+	got, err := c.RequestFrom(body)
+	if err != nil {
+		t.Fatalf("RequestFrom error: %v", err)
+	}
+	m := mustUnmarshal[map[string]any](t, got)
+	streamOptions, ok := m["stream_options"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected stream_options map, got %T", m["stream_options"])
+	}
+	if len(streamOptions) != 1 || streamOptions["include_usage"] != true {
+		t.Fatalf("expected stream_options to contain only include_usage=true, got %v", streamOptions)
+	}
+}
+
+// TestProviderConverter_RequestFrom_LeavesStreamOptionsAloneWhenNotStreaming
+// guards against RebuildStreamOptionsIncludeUsageOnly running on a
+// non-streaming request: IsStreaming gates the check, so a stray
+// stream_options-shaped field on a non-streaming body (unusual, but not
+// impossible) is left untouched.
+func TestProviderConverter_RequestFrom_LeavesStreamOptionsAloneWhenNotStreaming(t *testing.T) {
+	body := []byte(`{"model":"gpt-5-mini","stream_options":{"include_usage":true,"continuous_usage_stats":true},"messages":[]}`)
+
+	c := New(config.ProviderTypeOpenAI, RequestMode{
+		ModelID: "gpt-5-mini",
+		BaseURL: "https://api.openai.com/v1",
+		// IsStreaming intentionally left false.
+	})
+	got, err := c.RequestFrom(body)
+	if err != nil {
+		t.Fatalf("RequestFrom error: %v", err)
+	}
+	m := mustUnmarshal[map[string]any](t, got)
+	streamOptions, ok := m["stream_options"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected stream_options map, got %T", m["stream_options"])
+	}
+	if streamOptions["continuous_usage_stats"] != true {
+		t.Fatalf("expected stream_options to be left untouched for a non-streaming request, got %v", streamOptions)
+	}
+}
+
+// TestProviderConverter_RequestFrom_StripsStreamOptionsForAnthropicMessagesPassthrough
+// covers the MessagesPassthrough branch: native api.anthropic.com has no
+// stream_options concept at all (rejects the whole field, not just
+// unrecognized keys inside it), and a client can still send it directly on a
+// /v1/messages request since ingress sanitization only skips *injecting*
+// stream_options for isMessagesAPI, it doesn't strip one the client sent.
+func TestProviderConverter_RequestFrom_StripsStreamOptionsForAnthropicMessagesPassthrough(t *testing.T) {
+	body := []byte(`{"model":"claude-test","stream":true,"stream_options":{"include_usage":true},"messages":[]}`)
+
+	c := New(config.ProviderTypeAnthropic, RequestMode{
+		ModelID:             "claude-test",
+		MessagesPassthrough: true,
+		IsStreaming:         true,
+	})
+	got, err := c.RequestFrom(body)
+	if err != nil {
+		t.Fatalf("RequestFrom error: %v", err)
+	}
+	m := mustUnmarshal[map[string]any](t, got)
+	if _, present := m["stream_options"]; present {
+		t.Fatalf("expected stream_options to be stripped for Anthropic messages passthrough, got %s", string(got))
+	}
+}
+
 func TestProviderConverter_RequestFrom_Anthropic(t *testing.T) {
 	body := mustJSON(t, minimalOpenAIChatRequest())
 
