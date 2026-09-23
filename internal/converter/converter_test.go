@@ -27,17 +27,18 @@ func TestProviderConverter_RequestFrom_Passthrough(t *testing.T) {
 	}
 }
 
-// TestProviderConverter_RequestFrom_StripsCacheSaltForNonRealOpenAIHost
-// covers the "default" (OpenAI-compatible) branch of RequestFrom: cache_salt
-// is a genuine OpenAI Chat Completions parameter, but most other servers
-// speaking the same wire protocol (aggregators, self-hosted deployments)
-// reject it outright, so it must only be forwarded to genuine api.openai.com.
-func TestProviderConverter_RequestFrom_StripsCacheSaltForNonRealOpenAIHost(t *testing.T) {
+// TestProviderConverter_RequestFrom_StripsCacheSaltForOpenAICompatible covers
+// the "default" (OpenAI-compatible) branch of RequestFrom: cache_salt is a
+// LiteLLM/router-level convention, not part of OpenAI's own Chat Completions
+// API -- genuine api.openai.com rejects it outright with a 400 ("Unknown
+// parameter: 'cache_salt'.", confirmed directly against api.openai.com), same
+// as every other server sharing this default bucket, so there's no "real
+// OpenAI" exception to carve out here.
+func TestProviderConverter_RequestFrom_StripsCacheSaltForOpenAICompatible(t *testing.T) {
 	body := []byte(`{"model":"gpt-5-mini","cache_salt":"partition-1","messages":[]}`)
 
 	c := New(config.ProviderTypeOpenAI, RequestMode{
 		ModelID: "gpt-5-mini",
-		BaseURL: "https://api.cometapi.com/v1",
 	})
 	got, err := c.RequestFrom(body)
 	if err != nil {
@@ -45,24 +46,7 @@ func TestProviderConverter_RequestFrom_StripsCacheSaltForNonRealOpenAIHost(t *te
 	}
 	m := mustUnmarshal[map[string]any](t, got)
 	if _, present := m["cache_salt"]; present {
-		t.Fatalf("expected cache_salt to be stripped for non-OpenAI base_url, got %s", string(got))
-	}
-}
-
-func TestProviderConverter_RequestFrom_PreservesCacheSaltForRealOpenAIHost(t *testing.T) {
-	body := []byte(`{"model":"gpt-5-mini","cache_salt":"partition-1","messages":[]}`)
-
-	c := New(config.ProviderTypeOpenAI, RequestMode{
-		ModelID: "gpt-5-mini",
-		BaseURL: "https://api.openai.com/v1",
-	})
-	got, err := c.RequestFrom(body)
-	if err != nil {
-		t.Fatalf("RequestFrom error: %v", err)
-	}
-	m := mustUnmarshal[map[string]any](t, got)
-	if v, present := m["cache_salt"]; !present || v != "partition-1" {
-		t.Fatalf("expected cache_salt to be preserved for genuine api.openai.com, got %s", string(got))
+		t.Fatalf("expected cache_salt to be stripped, got %s", string(got))
 	}
 }
 
@@ -75,7 +59,6 @@ func TestProviderConverter_RequestFrom_PreservesCacheSaltForVLLM(t *testing.T) {
 
 	c := New(config.ProviderTypeVLLM, RequestMode{
 		ModelID: "qwen3-32b",
-		BaseURL: "https://vllm.internal.example.com/v1",
 	})
 	got, err := c.RequestFrom(body)
 	if err != nil {
@@ -136,7 +119,6 @@ func TestProviderConverter_RequestFrom_StripsCacheSaltForEmbeddings(t *testing.T
 	c := New(config.ProviderTypeOpenAI, RequestMode{
 		IsEmbeddings: true,
 		ModelID:      "text-embedding-3-small",
-		BaseURL:      "https://api.cometapi.com/v1",
 	})
 	got, err := c.RequestFrom(body)
 	if err != nil {
@@ -144,7 +126,7 @@ func TestProviderConverter_RequestFrom_StripsCacheSaltForEmbeddings(t *testing.T
 	}
 	m := mustUnmarshal[map[string]any](t, got)
 	if _, present := m["cache_salt"]; present {
-		t.Fatalf("expected cache_salt to be stripped for embeddings on a non-OpenAI host, got %s", string(got))
+		t.Fatalf("expected cache_salt to be stripped for embeddings, got %s", string(got))
 	}
 }
 
@@ -152,14 +134,12 @@ func TestProviderConverter_RequestFrom_StripsCacheSaltForEmbeddings(t *testing.T
 // the "default" (OpenAI-compatible) branch: real api.openai.com doesn't
 // understand vLLM's stream_options.continuous_usage_stats extension key
 // (rejects it outright with a 400), so it must be stripped down to just
-// include_usage regardless of how genuine the destination host is -- unlike
-// cache_salt, there's no "real OpenAI" exception here.
+// include_usage for everyone except vLLM.
 func TestProviderConverter_RequestFrom_StripsStreamOptionsExtrasForOpenAI(t *testing.T) {
 	body := []byte(`{"model":"gpt-5-mini","stream":true,"stream_options":{"include_usage":true,"continuous_usage_stats":true},"messages":[]}`)
 
 	c := New(config.ProviderTypeOpenAI, RequestMode{
 		ModelID:     "gpt-5-mini",
-		BaseURL:     "https://api.openai.com/v1",
 		IsStreaming: true,
 	})
 	got, err := c.RequestFrom(body)
@@ -185,7 +165,6 @@ func TestProviderConverter_RequestFrom_PreservesStreamOptionsExtrasForVLLM(t *te
 
 	c := New(config.ProviderTypeVLLM, RequestMode{
 		ModelID:     "qwen3-32b",
-		BaseURL:     "https://vllm.internal.example.com/v1",
 		IsStreaming: true,
 	})
 	got, err := c.RequestFrom(body)
@@ -236,7 +215,6 @@ func TestProviderConverter_RequestFrom_LeavesStreamOptionsAloneWhenNotStreaming(
 
 	c := New(config.ProviderTypeOpenAI, RequestMode{
 		ModelID: "gpt-5-mini",
-		BaseURL: "https://api.openai.com/v1",
 		// IsStreaming intentionally left false.
 	})
 	got, err := c.RequestFrom(body)

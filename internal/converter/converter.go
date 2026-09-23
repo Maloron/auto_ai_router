@@ -40,12 +40,6 @@ type RequestMode struct {
 	ModelID             string // real provider model name (URL construction, format detection)
 	DisplayModelID      string // alias to echo in responses; falls back to ModelID when empty
 	ContentType         string // original request content type (needed for multipart endpoints)
-	// BaseURL is the credential's configured base_url. Only used to
-	// distinguish genuine api.openai.com from a third-party server that
-	// merely speaks OpenAI's wire protocol (see openaiconv.IsRealOpenAIHost)
-	// -- provider Type alone can't tell the two apart, since both are
-	// configured as type: "openai".
-	BaseURL string
 }
 
 // responseModel returns the model name to embed in response/streaming output.
@@ -122,30 +116,27 @@ func New(providerType config.ProviderType, mode RequestMode) *ProviderConverter 
 }
 
 // shouldStripCacheSalt reports whether cache_salt must be removed from the
-// request body before forwarding. cache_salt is a genuine OpenAI Chat
-// Completions parameter (partitions prompt caching); most other servers that
-// merely speak the OpenAI wire protocol -- aggregators, strict OpenAI-shaped
-// deployments -- reject it outright with a 400 ("cache_salt: Extra inputs
-// are not permitted") rather than ignoring an unknown field. Strip it
-// everywhere except: genuine api.openai.com (see IsRealOpenAIHost), and
-// self-hosted vLLM (config.ProviderTypeVLLM), which is confirmed to support
-// the parameter for its own prefix-cache partitioning -- stripping it there
-// would silently disable that partitioning instead of avoiding an error.
+// request body before forwarding. cache_salt is a LiteLLM/router-level
+// convention for partitioning prompt caching; genuine api.openai.com rejects
+// it outright with a 400 ("Unknown parameter: 'cache_salt'.") just like every
+// other OpenAI-wire-protocol server that doesn't recognize it -- confirmed
+// directly against api.openai.com, so there is no "real OpenAI" exception
+// here (unlike, say, an actual OpenAI-only parameter would need). The one
+// exception is self-hosted vLLM (config.ProviderTypeVLLM), which is confirmed
+// to support the parameter for its own prefix-cache partitioning -- stripping
+// it there would silently disable that partitioning instead of avoiding an
+// error.
 func (c *ProviderConverter) shouldStripCacheSalt() bool {
-	if c.providerType == config.ProviderTypeVLLM {
-		return false
-	}
-	return !openaiconv.IsRealOpenAIHost(c.mode.BaseURL)
+	return c.providerType != config.ProviderTypeVLLM
 }
 
 // shouldStripStreamOptionsExtras reports whether a streaming request's
 // stream_options object must be rebuilt down to just {"include_usage": true}
 // before forwarding, discarding provider-specific extension keys (e.g.
 // vLLM's continuous_usage_stats) the ingress sanitizer otherwise preserves.
-// Unlike cache_salt, real OpenAI itself doesn't understand these extension
-// keys either -- only self-hosted vLLM (config.ProviderTypeVLLM) does, so
-// the exception is narrower: strip for everyone except vLLM, not "everyone
-// except vLLM and genuine OpenAI".
+// Same shape as shouldStripCacheSalt: only self-hosted vLLM
+// (config.ProviderTypeVLLM) is confirmed to understand these extension keys,
+// so strip for everyone else, real api.openai.com included.
 func (c *ProviderConverter) shouldStripStreamOptionsExtras() bool {
 	return c.providerType != config.ProviderTypeVLLM
 }
@@ -223,8 +214,8 @@ func (c *ProviderConverter) RequestFrom(body []byte) ([]byte, error) {
 		}
 
 		// See shouldStripCacheSalt: strip for everyone in this default bucket
-		// (aggregators, strict OpenAI-shaped deployments, ...) except genuine
-		// api.openai.com and self-hosted vLLM.
+		// (aggregators, strict OpenAI-shaped deployments, genuine
+		// api.openai.com, ...) except self-hosted vLLM.
 		if c.shouldStripCacheSalt() {
 			body = openaiconv.StripCacheSalt(body)
 		}

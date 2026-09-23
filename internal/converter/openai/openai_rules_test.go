@@ -824,28 +824,3 @@ func TestStripCacheSalt_InvalidJSON(t *testing.T) {
 	result := StripCacheSalt(body)
 	assert.Equal(t, body, result, "invalid JSON should be returned unchanged rather than dropped")
 }
-
-// --- IsRealOpenAIHost tests ---
-
-func TestIsRealOpenAIHost(t *testing.T) {
-	tests := []struct {
-		name    string
-		baseURL string
-		want    bool
-	}{
-		{"empty", "", false},
-		{"genuine openai https", "https://api.openai.com/v1", true},
-		{"genuine openai no scheme", "api.openai.com/v1", true},
-		{"genuine openai bare host", "api.openai.com", true},
-		{"genuine openai subdomain", "https://eu.api.openai.com/v1", true},
-		{"openrouter", "https://openrouter.ai/api/v1", false},
-		{"self-hosted vLLM", "https://llm.internal.example.com/v1", false},
-		{"lookalike host is not a real subdomain", "https://api.openai.com.evil.example.com", false},
-		{"malformed URL", "https://[::1", false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, IsRealOpenAIHost(tt.baseURL))
-		})
-	}
-}
