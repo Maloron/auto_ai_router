@@ -3,7 +3,6 @@ package openai
 import (
 	"bytes"
 	"encoding/json"
-	"net/url"
 	"slices"
 	"strings"
 )
@@ -505,13 +504,14 @@ func StripResponseFormat(body []byte) []byte {
 }
 
 // StripCacheSalt removes the cache_salt field from a JSON request body.
-// cache_salt is a real OpenAI Chat Completions parameter (partitions prompt
-// caching), but it's recent enough that most other OpenAI-compatible server
-// implementations -- vLLM-based deployments, aggregators, anything using a
-// strict Pydantic/JSON-Schema request model -- don't recognize it yet and
-// reject the whole request with a 400 ("cache_salt: Extra inputs are not
-// permitted") rather than ignoring an unknown field. See IsRealOpenAIHost:
-// only genuine api.openai.com should ever see this field forwarded.
+// cache_salt is a LiteLLM/router-level convention for partitioning prompt
+// caching; it's not part of OpenAI's own Chat Completions API, and genuine
+// api.openai.com rejects it outright with a 400 ("Unknown parameter:
+// 'cache_salt'.") -- confirmed directly against api.openai.com, not just
+// inferred -- same as every other OpenAI-wire-protocol server that doesn't
+// recognize it. Only self-hosted vLLM is confirmed to actually support it,
+// for its own prefix-cache partitioning (see
+// ProviderConverter.shouldStripCacheSalt).
 func StripCacheSalt(body []byte) []byte {
 	// This runs on every request through the default (OpenAI-compatible)
 	// branch, so skip the unmarshal/marshal round trip in the common case
@@ -572,28 +572,6 @@ func StripStreamOptions(body []byte) []byte {
 	return UpdateJSONField(body, ModelParamsMapping{
 		KeysToRemove: []string{"stream_options"},
 	})
-}
-
-// IsRealOpenAIHost reports whether baseURL points at OpenAI's own API
-// (api.openai.com or a subdomain), as opposed to a third-party server that
-// merely speaks the OpenAI-compatible wire protocol (OpenRouter, a
-// self-hosted vLLM deployment, most aggregators) -- credentials of type
-// "openai" cover both cases here, since AIR's provider Type field only
-// records the wire protocol, not who actually operates the endpoint.
-func IsRealOpenAIHost(baseURL string) bool {
-	trimmed := strings.TrimSpace(baseURL)
-	if trimmed == "" {
-		return false
-	}
-	u, err := url.Parse(trimmed)
-	if err != nil || u.Hostname() == "" {
-		u, err = url.Parse("https://" + trimmed)
-		if err != nil {
-			return false
-		}
-	}
-	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
-	return host == "api.openai.com" || strings.HasSuffix(host, ".api.openai.com")
 }
 
 func ReplaceResponsesBodyParam(modelID string, body []byte) []byte {
