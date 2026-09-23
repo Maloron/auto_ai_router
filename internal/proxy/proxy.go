@@ -1684,6 +1684,7 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request) {
 				DisplayModelID:      modelID,
 				ContentType:         r.Header.Get("Content-Type"),
 				BaseURL:             cred.BaseURL,
+				IsVLLM:              cred.Type == config.ProviderTypeVLLM,
 			})
 			var convErr error
 			requestBody, convErr = conv.RequestFrom(body)

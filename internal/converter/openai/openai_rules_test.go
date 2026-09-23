@@ -882,3 +882,37 @@ func TestStripOpenRouterOnlyFields_InvalidJSON(t *testing.T) {
 	result := StripOpenRouterOnlyFields(body)
 	assert.Equal(t, body, result, "invalid JSON should be returned unchanged rather than dropped")
 }
+
+// --- StripVLLMOnlySamplingParams tests ---
+
+func TestStripVLLMOnlySamplingParams_RemovesAllThreeFields(t *testing.T) {
+	body := makeBody(t, map[string]any{
+		"model":                "test",
+		"chat_template_kwargs": map[string]any{"enable_thinking": true},
+		"repetition_penalty":   1.1,
+		"length_penalty":       1.0,
+		"messages":             []any{},
+	})
+	result := bodyToMap(t, StripVLLMOnlySamplingParams(body))
+	for _, key := range []string{"chat_template_kwargs", "repetition_penalty", "length_penalty"} {
+		_, present := result[key]
+		assert.False(t, present, "%s should have been stripped", key)
+	}
+	assert.Equal(t, "test", result["model"])
+}
+
+// TestStripVLLMOnlySamplingParams_NoFieldPresent verifies the fast path: when
+// none of the three fields are in the body at all, the exact same byte slice
+// is returned rather than round-tripped through unmarshal/marshal.
+func TestStripVLLMOnlySamplingParams_NoFieldPresent(t *testing.T) {
+	body := []byte(`{"model":"gpt-4o","messages":[]}`)
+	result := StripVLLMOnlySamplingParams(body)
+	require.Equal(t, 0, bytes.Compare(body, result))
+	assert.True(t, &body[0] == &result[0], "expected the exact same underlying array to be returned")
+}
+
+func TestStripVLLMOnlySamplingParams_InvalidJSON(t *testing.T) {
+	body := []byte(`{"repetition_penalty": not valid json`)
+	result := StripVLLMOnlySamplingParams(body)
+	assert.Equal(t, body, result, "invalid JSON should be returned unchanged rather than dropped")
+}
