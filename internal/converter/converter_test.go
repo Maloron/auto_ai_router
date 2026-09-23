@@ -253,6 +253,30 @@ func TestProviderConverter_RequestFrom_LeavesStreamOptionsAloneWhenNotStreaming(
 	}
 }
 
+// TestProviderConverter_RequestFrom_StripsStreamOptionsForAnthropicMessagesPassthrough
+// covers the MessagesPassthrough branch: native api.anthropic.com has no
+// stream_options concept at all (rejects the whole field, not just
+// unrecognized keys inside it), and a client can still send it directly on a
+// /v1/messages request since ingress sanitization only skips *injecting*
+// stream_options for isMessagesAPI, it doesn't strip one the client sent.
+func TestProviderConverter_RequestFrom_StripsStreamOptionsForAnthropicMessagesPassthrough(t *testing.T) {
+	body := []byte(`{"model":"claude-test","stream":true,"stream_options":{"include_usage":true},"messages":[]}`)
+
+	c := New(config.ProviderTypeAnthropic, RequestMode{
+		ModelID:             "claude-test",
+		MessagesPassthrough: true,
+		IsStreaming:         true,
+	})
+	got, err := c.RequestFrom(body)
+	if err != nil {
+		t.Fatalf("RequestFrom error: %v", err)
+	}
+	m := mustUnmarshal[map[string]any](t, got)
+	if _, present := m["stream_options"]; present {
+		t.Fatalf("expected stream_options to be stripped for Anthropic messages passthrough, got %s", string(got))
+	}
+}
+
 func TestProviderConverter_RequestFrom_Anthropic(t *testing.T) {
 	body := mustJSON(t, minimalOpenAIChatRequest())
 

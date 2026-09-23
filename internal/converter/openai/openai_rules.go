@@ -557,6 +557,23 @@ func RebuildStreamOptionsIncludeUsageOnly(body []byte) []byte {
 	return marshaled
 }
 
+// StripStreamOptions removes the stream_options field from a JSON request
+// body entirely, unlike RebuildStreamOptionsIncludeUsageOnly. Used for the
+// native Anthropic Messages API (/v1/messages), which -- unlike the OpenAI
+// wire protocol bucket -- doesn't merely reject unrecognized keys inside
+// stream_options, it has no stream_options concept at all and rejects the
+// whole field outright with a 400 ("stream_options: Extra inputs are not
+// permitted"). Native Anthropic streaming always includes usage regardless,
+// so there's no include_usage equivalent to preserve here.
+func StripStreamOptions(body []byte) []byte {
+	if !bytes.Contains(body, []byte(`"stream_options"`)) {
+		return body
+	}
+	return UpdateJSONField(body, ModelParamsMapping{
+		KeysToRemove: []string{"stream_options"},
+	})
+}
+
 // IsRealOpenAIHost reports whether baseURL points at OpenAI's own API
 // (api.openai.com or a subdomain), as opposed to a third-party server that
 // merely speaks the OpenAI-compatible wire protocol (OpenRouter, a

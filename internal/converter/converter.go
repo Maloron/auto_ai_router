@@ -187,11 +187,16 @@ func (c *ProviderConverter) RequestFrom(body []byte) ([]byte, error) {
 		if c.mode.MessagesPassthrough {
 			// body is already native Anthropic Messages JSON (model field already
 			// resolved to c.mode.ModelID upstream) — forward as-is, minus any
-			// stray OpenAI-only fields a client sent anyway (see shouldStripCacheSalt).
+			// stray OpenAI-only fields a client sent anyway (see shouldStripCacheSalt),
+			// and minus stream_options: unlike the OpenAI wire protocol bucket, native
+			// Anthropic has no stream_options concept at all (rejects the whole
+			// field, not just unrecognized keys inside it) -- a client can still
+			// send it directly on a /v1/messages request since the ingress
+			// sanitizer already skips stream_options injection for isMessagesAPI.
 			if c.shouldStripCacheSalt() {
 				body = openaiconv.StripCacheSalt(body)
 			}
-			return body, nil
+			return openaiconv.StripStreamOptions(body), nil
 		}
 		return anthropic.OpenAIToAnthropic(body, c.mode.ModelID, c.providerType == config.ProviderTypeAnthropic)
 	case config.ProviderTypeBedrock:
