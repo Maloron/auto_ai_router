@@ -524,6 +524,39 @@ func StripCacheSalt(body []byte) []byte {
 	})
 }
 
+var streamOptionsIncludeUsageOnly = json.RawMessage(`{"include_usage":true}`)
+
+// RebuildStreamOptionsIncludeUsageOnly replaces the stream_options object
+// with exactly {"include_usage": true} when present, discarding any other
+// keys. The ingress sanitizer guarantees stream_options exists with
+// include_usage=true for every streaming Chat Completions request but
+// otherwise preserves whatever the client sent (e.g. vLLM's
+// continuous_usage_stats extension) -- that's fine for a genuine self-hosted
+// vLLM destination, which understands the key, but api.openai.com and other
+// strict OpenAI-compatible servers reject an unrecognized key outright with
+// a 400 ("stream_options: Extra inputs are not permitted"). Callers decide
+// when to call this based on the resolved provider (see
+// ProviderConverter.shouldStripStreamOptionsExtras); it's a no-op if
+// stream_options isn't present.
+func RebuildStreamOptionsIncludeUsageOnly(body []byte) []byte {
+	if !bytes.Contains(body, []byte(`"stream_options"`)) {
+		return body
+	}
+	var data map[string]json.RawMessage
+	if err := json.Unmarshal(body, &data); err != nil {
+		return body
+	}
+	if _, exists := data["stream_options"]; !exists {
+		return body
+	}
+	data["stream_options"] = streamOptionsIncludeUsageOnly
+	marshaled, err := json.Marshal(data)
+	if err != nil {
+		return body
+	}
+	return marshaled
+}
+
 // IsRealOpenAIHost reports whether baseURL points at OpenAI's own API
 // (api.openai.com or a subdomain), as opposed to a third-party server that
 // merely speaks the OpenAI-compatible wire protocol (OpenRouter, a

@@ -239,21 +239,36 @@ func extractSessionIDFromHeaders(header http.Header) string {
 	return ""
 }
 
-var rawStreamOptionsIncludeUsageOnly = goccyjson.RawMessage(`{"include_usage":true}`)
+var rawIncludeUsageTrue = goccyjson.RawMessage("true")
 
-// injectIncludeUsageRaw sets reqBody["stream_options"] to exactly
-// {"include_usage": true}, discarding whatever the client sent there rather
-// than merging into it. A client's own stream_options object commonly
-// carries provider-specific keys (e.g. vLLM's continuous_usage_stats) that
-// api.openai.com and other strict OpenAI-compatible servers reject outright
-// with a 400 ("stream_options: Extra inputs are not permitted"), while
-// aggregators silently ignore them -- surfacing as "works through an
-// aggregator, 400 direct". include_usage is the only key AIR itself relies
-// on downstream, so a full rebuild is safe. Operates entirely on RawMessage
+// injectIncludeUsageRaw ensures reqBody["stream_options"]["include_usage"] is
+// true, merging into whatever stream_options object the client sent rather
+// than discarding it. This runs before the destination provider is resolved
+// (sanitizeAndExtractRequestBody is called at request ingress, ahead of
+// credential selection), so it cannot know yet whether a client-sent
+// provider-specific key like vLLM's continuous_usage_stats should ultimately
+// survive: that decision needs the resolved provider and is made later, in
+// converter.ProviderConverter.RequestFrom (see shouldStripStreamOptionsExtras
+// / RebuildStreamOptionsIncludeUsageOnly). Operates entirely on RawMessage
 // sub-slices so the rest of reqBody (in particular messages/input) is never
 // boxed into interface{}.
 func injectIncludeUsageRaw(reqBody map[string]goccyjson.RawMessage) error {
-	reqBody["stream_options"] = rawStreamOptionsIncludeUsageOnly
+	streamOptionsRaw, exists := reqBody["stream_options"]
+	var streamOptions map[string]goccyjson.RawMessage
+	if exists {
+		_ = goccyjson.Unmarshal(streamOptionsRaw, &streamOptions)
+	}
+	if streamOptions == nil {
+		streamOptions = map[string]goccyjson.RawMessage{"include_usage": rawIncludeUsageTrue}
+	} else {
+		streamOptions["include_usage"] = rawIncludeUsageTrue
+	}
+
+	marshaled, err := goccyjson.Marshal(streamOptions)
+	if err != nil {
+		return err
+	}
+	reqBody["stream_options"] = marshaled
 	return nil
 }
 
@@ -768,19 +783,30 @@ func extractTokensFromResponse(body []byte, credType config.ProviderType) int {
 	return extractOpenAITotalTokens(body)
 }
 
-// injectStreamOptions sets stream_options to exactly {"include_usage": true}
-// in a Chat Completions request body, discarding any client-sent
-// stream_options object rather than merging into it -- see
-// injectIncludeUsageRaw for why a full rebuild is required, not just an
-// include_usage overwrite. Used after Responses API conversion where ingress
-// sanitization skipped injection.
+// injectStreamOptions ensures stream_options.include_usage is set in a Chat
+// Completions request body, merging into whatever the client sent rather
+// than discarding it -- see injectIncludeUsageRaw for why: this runs before
+// the destination provider is resolved, so provider-specific extension keys
+// are stripped later if needed, in converter.RequestFrom. Used after
+// Responses API conversion where ingress sanitization skipped injection.
 func injectStreamOptions(body []byte) []byte {
 	var raw map[string]interface{}
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return body
 	}
 
-	raw["stream_options"] = map[string]interface{}{"include_usage": true}
+	streamOptions, exists := raw["stream_options"]
+	if !exists {
+		raw["stream_options"] = map[string]interface{}{
+			"include_usage": true,
+		}
+	} else if soMap, ok := streamOptions.(map[string]interface{}); ok {
+		soMap["include_usage"] = true
+	} else {
+		raw["stream_options"] = map[string]interface{}{
+			"include_usage": true,
+		}
+	}
 
 	modified, err := json.Marshal(raw)
 	if err != nil {

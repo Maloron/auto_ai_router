@@ -138,6 +138,18 @@ func (c *ProviderConverter) shouldStripCacheSalt() bool {
 	return !openaiconv.IsRealOpenAIHost(c.mode.BaseURL)
 }
 
+// shouldStripStreamOptionsExtras reports whether a streaming request's
+// stream_options object must be rebuilt down to just {"include_usage": true}
+// before forwarding, discarding provider-specific extension keys (e.g.
+// vLLM's continuous_usage_stats) the ingress sanitizer otherwise preserves.
+// Unlike cache_salt, real OpenAI itself doesn't understand these extension
+// keys either -- only self-hosted vLLM (config.ProviderTypeVLLM) does, so
+// the exception is narrower: strip for everyone except vLLM, not "everyone
+// except vLLM and genuine OpenAI".
+func (c *ProviderConverter) shouldStripStreamOptionsExtras() bool {
+	return c.providerType != config.ProviderTypeVLLM
+}
+
 // RequestFrom converts an OpenAI-format request body to the provider-specific format.
 // Returns the original body unchanged for OpenAI-compatible providers (passthrough).
 func (c *ProviderConverter) RequestFrom(body []byte) ([]byte, error) {
@@ -192,6 +204,9 @@ func (c *ProviderConverter) RequestFrom(body []byte) ([]byte, error) {
 		if c.shouldStripCacheSalt() {
 			body = openaiconv.StripCacheSalt(body)
 		}
+		if c.mode.IsStreaming && c.shouldStripStreamOptionsExtras() {
+			body = openaiconv.RebuildStreamOptionsIncludeUsageOnly(body)
+		}
 		return body, nil
 	default:
 		// ProviderTypeOpenAI, ProviderTypeProxy, ProviderTypeAIR, and others:
@@ -207,6 +222,14 @@ func (c *ProviderConverter) RequestFrom(body []byte) ([]byte, error) {
 		// api.openai.com and self-hosted vLLM.
 		if c.shouldStripCacheSalt() {
 			body = openaiconv.StripCacheSalt(body)
+		}
+
+		// See shouldStripStreamOptionsExtras: the ingress sanitizer preserves
+		// whatever stream_options object the client sent (plus a guaranteed
+		// include_usage=true); strip it down to just include_usage here for
+		// every destination except vLLM, which understands the extra keys.
+		if c.mode.IsStreaming && c.shouldStripStreamOptionsExtras() {
+			body = openaiconv.RebuildStreamOptionsIncludeUsageOnly(body)
 		}
 
 		if c.mode.IsImageGeneration || c.mode.IsImageEdit {
