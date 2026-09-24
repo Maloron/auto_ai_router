@@ -258,7 +258,7 @@ func OpenAIToAnthropic(openAIBody []byte, model string, isRealAnthropicBackend b
 	return json.Marshal(anthropicReq)
 }
 
-// normalizeSchemaForAnthropicOutput returns a deep copy of schema with two
+// normalizeSchemaForAnthropicOutput returns a deep copy of schema with three
 // fixups applied to every node, needed before Anthropic's native Structured
 // Outputs (output_config.format.schema) will accept an OpenAI-shaped
 // response_format.json_schema:
@@ -285,9 +285,19 @@ func OpenAIToAnthropic(openAIBody []byte, model string, isRealAnthropicBackend b
 //     "type" alongside "enum" is left alone -- only the array/union form
 //     breaks Anthropic's validator.
 //
-// Both fixups only ever fill in or remove what OpenAI's own contract leaves
-// optional; an explicit "additionalProperties" the client already set
-// (false, true, or a nested schema) is always left untouched.
+//  3. "minimum"/"maximum" are dropped from any "number" or "integer" node.
+//     Confirmed live: "output_config.format.schema: For 'number' type,
+//     properties maximum, minimum are not supported" -- Anthropic's
+//     Structured Outputs schema support is a narrower subset of JSON Schema
+//     than OpenAI's; range bounds on numeric types aren't in it. Applied to
+//     "integer" too on the same reasoning even though only "number" is
+//     confirmed live, since both are numeric and share the same keywords in
+//     JSON Schema.
+//
+// All three fixups only ever fill in or remove what OpenAI's own contract
+// leaves optional or Anthropic simply doesn't support; an explicit
+// "additionalProperties" the client already set (false, true, or a nested
+// schema) is always left untouched.
 //
 // A node counts as object-typed for fixup 1 when its "type" is (or
 // includes) "object", or -- since JSON Schema doesn't require "type" to be
@@ -308,6 +318,10 @@ func normalizeSchemaForAnthropicOutput(schema any) any {
 				delete(out, "type")
 			}
 		}
+		if isNumericSchemaNode(node) {
+			delete(out, "minimum")
+			delete(out, "maximum")
+		}
 		return out
 	case []interface{}:
 		out := make([]interface{}, len(node))
@@ -318,6 +332,11 @@ func normalizeSchemaForAnthropicOutput(schema any) any {
 	default:
 		return schema
 	}
+}
+
+func isNumericSchemaNode(node map[string]interface{}) bool {
+	t, _ := node["type"].(string)
+	return t == "number" || t == "integer"
 }
 
 func isObjectSchemaNode(node map[string]interface{}) bool {
