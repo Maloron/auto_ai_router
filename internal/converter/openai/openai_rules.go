@@ -617,6 +617,25 @@ func StripOpenRouterOnlyFields(body []byte) []byte {
 	})
 }
 
+// StripVLLMOnlySamplingParams removes chat_template_kwargs, repetition_penalty,
+// and length_penalty from a JSON request body. All three are vLLM/HF-generate
+// sampling extensions, not part of OpenAI's own Chat Completions API -- AIR
+// itself supports configuring them as per-model defaults for vLLM deployments
+// (see litellmdb ChatTemplateKwargs/RepetitionPenalty), but every other
+// OpenAI-wire-protocol destination is confirmed to reject all three outright
+// with a 400 ("Unknown parameter: '<field>'.", confirmed directly against
+// api.openai.com), same as cache_salt/stream_options/plugins.
+func StripVLLMOnlySamplingParams(body []byte) []byte {
+	if !bytes.Contains(body, []byte(`"chat_template_kwargs"`)) &&
+		!bytes.Contains(body, []byte(`"repetition_penalty"`)) &&
+		!bytes.Contains(body, []byte(`"length_penalty"`)) {
+		return body
+	}
+	return UpdateJSONField(body, ModelParamsMapping{
+		KeysToRemove: []string{"chat_template_kwargs", "repetition_penalty", "length_penalty"},
+	})
+}
+
 func ReplaceResponsesBodyParam(modelID string, body []byte) []byte {
 	if !matchModelFamily(modelID, "gpt-6") {
 		return body

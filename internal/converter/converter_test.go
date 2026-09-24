@@ -53,12 +53,18 @@ func TestProviderConverter_RequestFrom_StripsCacheSaltForOpenAICompatible(t *tes
 // TestProviderConverter_RequestFrom_PreservesCacheSaltForVLLM covers the vLLM
 // exception to shouldStripCacheSalt: self-hosted vLLM is confirmed to support
 // cache_salt for its own prefix-cache partitioning, unlike other non-OpenAI
-// servers sharing the same default RequestFrom bucket.
+// servers sharing the same default RequestFrom bucket. providerType is
+// ProviderTypeOpenAI here, not ProviderTypeVLLM: CredentialConfig.
+// EffectiveProviderType normalizes real vLLM credentials to OpenAI before
+// they ever reach the converter (vLLM speaks the OpenAI wire protocol), so
+// RequestMode.IsVLLM -- not providerType -- is what the real pipeline
+// actually sets to signal a genuine vLLM destination.
 func TestProviderConverter_RequestFrom_PreservesCacheSaltForVLLM(t *testing.T) {
 	body := []byte(`{"model":"qwen3-32b","cache_salt":"partition-1","messages":[]}`)
 
-	c := New(config.ProviderTypeVLLM, RequestMode{
+	c := New(config.ProviderTypeOpenAI, RequestMode{
 		ModelID: "qwen3-32b",
+		IsVLLM:  true,
 	})
 	got, err := c.RequestFrom(body)
 	if err != nil {
@@ -163,9 +169,10 @@ func TestProviderConverter_RequestFrom_StripsStreamOptionsExtrasForOpenAI(t *tes
 func TestProviderConverter_RequestFrom_PreservesStreamOptionsExtrasForVLLM(t *testing.T) {
 	body := []byte(`{"model":"qwen3-32b","stream":true,"stream_options":{"include_usage":true,"continuous_usage_stats":true},"messages":[]}`)
 
-	c := New(config.ProviderTypeVLLM, RequestMode{
+	c := New(config.ProviderTypeOpenAI, RequestMode{
 		ModelID:     "qwen3-32b",
 		IsStreaming: true,
+		IsVLLM:      true,
 	})
 	got, err := c.RequestFrom(body)
 	if err != nil {
@@ -358,6 +365,138 @@ func TestProviderConverter_RequestFrom_StripsOpenRouterOnlyFieldsForEmbeddings(t
 	m := mustUnmarshal[map[string]any](t, got)
 	if _, present := m["plugins"]; present {
 		t.Fatalf("expected plugins to be stripped for embeddings, got %s", string(got))
+	}
+}
+
+// TestProviderConverter_RequestFrom_StripsVLLMOnlySamplingParamsForOpenAICompatible
+// covers the "default" (OpenAI-compatible) branch: chat_template_kwargs/
+// repetition_penalty/length_penalty are vLLM/HF sampling extensions that
+// every other destination sharing this bucket (aggregators, genuine
+// api.openai.com, ...) is confirmed to reject with a 400.
+func TestProviderConverter_RequestFrom_StripsVLLMOnlySamplingParamsForOpenAICompatible(t *testing.T) {
+	body := []byte(`{"model":"gpt-5-mini","chat_template_kwargs":{"enable_thinking":true},"repetition_penalty":1.1,"length_penalty":1.0,"messages":[]}`)
+
+	c := New(config.ProviderTypeOpenAI, RequestMode{
+		ModelID: "gpt-5-mini",
+	})
+	got, err := c.RequestFrom(body)
+	if err != nil {
+		t.Fatalf("RequestFrom error: %v", err)
+	}
+	m := mustUnmarshal[map[string]any](t, got)
+	for _, key := range []string{"chat_template_kwargs", "repetition_penalty", "length_penalty"} {
+		if _, present := m[key]; present {
+			t.Fatalf("expected %s to be stripped, got %s", key, string(got))
+		}
+	}
+}
+
+// TestProviderConverter_RequestFrom_PreservesVLLMOnlySamplingParamsForVLLM
+// covers the vLLM exception: self-hosted vLLM is confirmed to support all
+// three as genuine HF-generate sampling parameters.
+func TestProviderConverter_RequestFrom_PreservesVLLMOnlySamplingParamsForVLLM(t *testing.T) {
+	body := []byte(`{"model":"qwen3-32b","chat_template_kwargs":{"enable_thinking":true},"repetition_penalty":1.1,"length_penalty":1.0,"messages":[]}`)
+
+	c := New(config.ProviderTypeOpenAI, RequestMode{
+		ModelID: "qwen3-32b",
+		IsVLLM:  true,
+	})
+	got, err := c.RequestFrom(body)
+	if err != nil {
+		t.Fatalf("RequestFrom error: %v", err)
+	}
+	m := mustUnmarshal[map[string]any](t, got)
+	if v, present := m["repetition_penalty"]; !present || v != 1.1 {
+		t.Fatalf("expected repetition_penalty to be preserved for vLLM, got %s", string(got))
+	}
+	if v, present := m["length_penalty"]; !present || v != 1.0 {
+		t.Fatalf("expected length_penalty to be preserved for vLLM, got %s", string(got))
+	}
+	ctk, present := m["chat_template_kwargs"].(map[string]any)
+	if !present || ctk["enable_thinking"] != true {
+		t.Fatalf("expected chat_template_kwargs to be preserved for vLLM, got %s", string(got))
+	}
+}
+
+// TestProviderConverter_RequestFrom_PreservesVLLMOnlySamplingParamsForAnthropicMessagesPassthrough
+// covers the MessagesPassthrough branch: shouldStripVLLMOnlySamplingParams
+// only strips for providerType == ProviderTypeOpenAI, and this branch's
+// providerType is always Anthropic/CometAPI/ProMan, so a stray
+// repetition_penalty a client sent anyway is left alone here (unlike
+// cache_salt/stream_options/plugins, which this branch does still strip).
+func TestProviderConverter_RequestFrom_PreservesVLLMOnlySamplingParamsForAnthropicMessagesPassthrough(t *testing.T) {
+	body := []byte(`{"model":"claude-test","repetition_penalty":1.1,"messages":[]}`)
+
+	c := New(config.ProviderTypeAnthropic, RequestMode{
+		ModelID:             "claude-test",
+		MessagesPassthrough: true,
+	})
+	got, err := c.RequestFrom(body)
+	if err != nil {
+		t.Fatalf("RequestFrom error: %v", err)
+	}
+	m := mustUnmarshal[map[string]any](t, got)
+	if v, present := m["repetition_penalty"]; !present || v != 1.1 {
+		t.Fatalf("expected repetition_penalty to be left untouched for Anthropic messages passthrough, got %s", string(got))
+	}
+}
+
+// TestProviderConverter_RequestFrom_PreservesVLLMOnlySamplingParamsForBedrockOpenAICompatible
+// covers the Bedrock non-Anthropic branch (OpenAI-compatible passthrough,
+// e.g. GLM/Llama): providerType is always ProviderTypeBedrock here, never
+// ProviderTypeOpenAI, so shouldStripVLLMOnlySamplingParams never strips.
+func TestProviderConverter_RequestFrom_PreservesVLLMOnlySamplingParamsForBedrockOpenAICompatible(t *testing.T) {
+	body := []byte(`{"model":"zai.glm-4.7-flash","repetition_penalty":1.1,"messages":[]}`)
+
+	c := New(config.ProviderTypeBedrock, RequestMode{ModelID: "zai.glm-4.7-flash"})
+	got, err := c.RequestFrom(body)
+	if err != nil {
+		t.Fatalf("RequestFrom error: %v", err)
+	}
+	m := mustUnmarshal[map[string]any](t, got)
+	if v, present := m["repetition_penalty"]; !present || v != 1.1 {
+		t.Fatalf("expected repetition_penalty to be left untouched for Bedrock OpenAI-compatible passthrough, got %s", string(got))
+	}
+}
+
+// TestProviderConverter_RequestFrom_PreservesVLLMOnlySamplingParamsForProxyLikeCredentials
+// covers ProviderTypeProxy/ProviderTypeAIR (ProviderType.IsProxyLike): these
+// forward to another router/AIR instance this one doesn't control, which
+// could itself be fronting vLLM -- stripping here would discard a param the
+// actual destination understands, on pure speculation. Only a credential
+// confirmed to be type: "openai" is safe to strip for.
+func TestProviderConverter_RequestFrom_PreservesVLLMOnlySamplingParamsForProxyLikeCredentials(t *testing.T) {
+	body := []byte(`{"model":"some-model","repetition_penalty":1.1,"messages":[]}`)
+
+	for _, providerType := range []config.ProviderType{config.ProviderTypeProxy, config.ProviderTypeAIR} {
+		c := New(providerType, RequestMode{ModelID: "some-model"})
+		got, err := c.RequestFrom(body)
+		if err != nil {
+			t.Fatalf("%s: RequestFrom error: %v", providerType, err)
+		}
+		m := mustUnmarshal[map[string]any](t, got)
+		if v, present := m["repetition_penalty"]; !present || v != 1.1 {
+			t.Fatalf("%s: expected repetition_penalty to be left untouched, got %s", providerType, string(got))
+		}
+	}
+}
+
+// TestProviderConverter_RequestFrom_StripsVLLMOnlySamplingParamsForEmbeddings
+// covers the IsEmbeddings default branch.
+func TestProviderConverter_RequestFrom_StripsVLLMOnlySamplingParamsForEmbeddings(t *testing.T) {
+	body := []byte(`{"model":"text-embedding-3-small","repetition_penalty":1.1,"input":"hi"}`)
+
+	c := New(config.ProviderTypeOpenAI, RequestMode{
+		IsEmbeddings: true,
+		ModelID:      "text-embedding-3-small",
+	})
+	got, err := c.RequestFrom(body)
+	if err != nil {
+		t.Fatalf("RequestFrom error: %v", err)
+	}
+	m := mustUnmarshal[map[string]any](t, got)
+	if _, present := m["repetition_penalty"]; present {
+		t.Fatalf("expected repetition_penalty to be stripped for embeddings, got %s", string(got))
 	}
 }
 

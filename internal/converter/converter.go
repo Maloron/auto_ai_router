@@ -46,6 +46,16 @@ type RequestMode struct {
 	// -- provider Type alone can't tell them apart, since both are
 	// configured as type: "openai".
 	BaseURL string
+	// IsVLLM is true when the credential's *original* configured type is
+	// config.ProviderTypeVLLM. Needed separately from providerType (the
+	// constructor argument to New) because CredentialConfig.EffectiveProviderType
+	// deliberately normalizes vLLM to config.ProviderTypeOpenAI before it ever
+	// reaches the converter -- vLLM speaks the OpenAI wire protocol, so it must
+	// be routed through the same "default" switch case, not a dedicated one.
+	// That normalization means providerType alone can never distinguish a real
+	// vLLM deployment from any other OpenAI-compatible destination once inside
+	// RequestFrom; the vLLM-only exceptions below need this instead.
+	IsVLLM bool
 }
 
 // responseModel returns the model name to embed in response/streaming output.
@@ -128,23 +138,48 @@ func New(providerType config.ProviderType, mode RequestMode) *ProviderConverter 
 // other OpenAI-wire-protocol server that doesn't recognize it -- confirmed
 // directly against api.openai.com, so there is no "real OpenAI" exception
 // here (unlike, say, an actual OpenAI-only parameter would need). The one
-// exception is self-hosted vLLM (config.ProviderTypeVLLM), which is confirmed
+// exception is self-hosted vLLM (see RequestMode.IsVLLM), which is confirmed
 // to support the parameter for its own prefix-cache partitioning -- stripping
 // it there would silently disable that partitioning instead of avoiding an
 // error.
 func (c *ProviderConverter) shouldStripCacheSalt() bool {
-	return c.providerType != config.ProviderTypeVLLM
+	return !c.mode.IsVLLM
 }
 
 // shouldStripStreamOptionsExtras reports whether a streaming request's
 // stream_options object must be rebuilt down to just {"include_usage": true}
 // before forwarding, discarding provider-specific extension keys (e.g.
 // vLLM's continuous_usage_stats) the ingress sanitizer otherwise preserves.
-// Same shape as shouldStripCacheSalt: only self-hosted vLLM
-// (config.ProviderTypeVLLM) is confirmed to understand these extension keys,
-// so strip for everyone else, real api.openai.com included.
+// Same shape as shouldStripCacheSalt: only self-hosted vLLM (see
+// RequestMode.IsVLLM) is confirmed to understand these extension keys, so
+// strip for everyone else, real api.openai.com included.
 func (c *ProviderConverter) shouldStripStreamOptionsExtras() bool {
-	return c.providerType != config.ProviderTypeVLLM
+	return !c.mode.IsVLLM
+}
+
+// shouldStripVLLMOnlySamplingParams reports whether chat_template_kwargs,
+// repetition_penalty, and length_penalty must be removed from the request
+// body before forwarding. All three are vLLM/HF-generate-style sampling
+// extensions -- not part of OpenAI's own Chat Completions API -- that AIR
+// itself supports configuring as per-model defaults for vLLM deployments
+// (see litellmdb ChatTemplateKwargs/RepetitionPenalty). Confirmed directly
+// against api.openai.com that all three get the same "Unknown parameter"
+// 400 cache_salt/stream_options/plugins do.
+//
+// Narrower than shouldStripCacheSalt/shouldStripStreamOptionsExtras: this
+// only strips for providerType == ProviderTypeOpenAI, not every destination
+// sharing the same RequestFrom branches. ProviderTypeProxy and
+// ProviderTypeAIR (see ProviderType.IsProxyLike) forward to another AIR
+// instance or a dynamically-discovered backend AIR itself doesn't control --
+// that far end could be fronting vLLM, so stripping here would risk
+// discarding a param the actual destination understands, on our own
+// speculation about what's downstream. Only a credential explicitly
+// configured as type: "openai" (confirmed, not merely assumed, OpenAI wire
+// protocol with no further chaining) is safe to strip for unconditionally.
+// Bedrock and Anthropic/CometAPI/ProMan already fall outside this by virtue
+// of providerType never being ProviderTypeOpenAI there.
+func (c *ProviderConverter) shouldStripVLLMOnlySamplingParams() bool {
+	return !c.mode.IsVLLM && c.providerType == config.ProviderTypeOpenAI
 }
 
 // shouldStripOpenRouterOnlyFields reports whether `plugins` and `provider`
@@ -187,6 +222,9 @@ func (c *ProviderConverter) RequestFrom(body []byte) ([]byte, error) {
 			if c.shouldStripOpenRouterOnlyFields() {
 				body = openaiconv.StripOpenRouterOnlyFields(body)
 			}
+			if c.shouldStripVLLMOnlySamplingParams() {
+				body = openaiconv.StripVLLMOnlySamplingParams(body)
+			}
 			return body, nil
 		}
 	}
@@ -214,6 +252,10 @@ func (c *ProviderConverter) RequestFrom(body []byte) ([]byte, error) {
 			if c.shouldStripOpenRouterOnlyFields() {
 				body = openaiconv.StripOpenRouterOnlyFields(body)
 			}
+			// No shouldStripVLLMOnlySamplingParams call here: providerType is
+			// always Anthropic/CometAPI/ProMan in this branch, never
+			// ProviderTypeOpenAI, so it would always be a no-op (see that
+			// method's doc comment).
 			return openaiconv.StripStreamOptions(body), nil
 		}
 		return anthropic.OpenAIToAnthropic(body, c.mode.ModelID, c.providerType == config.ProviderTypeAnthropic)
@@ -233,6 +275,9 @@ func (c *ProviderConverter) RequestFrom(body []byte) ([]byte, error) {
 		if c.shouldStripOpenRouterOnlyFields() {
 			body = openaiconv.StripOpenRouterOnlyFields(body)
 		}
+		// No shouldStripVLLMOnlySamplingParams call here: providerType is
+		// always ProviderTypeBedrock in this branch, never ProviderTypeOpenAI,
+		// so it would always be a no-op (see that method's doc comment).
 		return body, nil
 	default:
 		// ProviderTypeOpenAI, ProviderTypeProxy, ProviderTypeAIR, and others:
@@ -265,6 +310,16 @@ func (c *ProviderConverter) RequestFrom(body []byte) ([]byte, error) {
 		// except genuine OpenRouter.
 		if c.shouldStripOpenRouterOnlyFields() {
 			body = openaiconv.StripOpenRouterOnlyFields(body)
+		}
+
+		// See shouldStripVLLMOnlySamplingParams: chat_template_kwargs/
+		// repetition_penalty/length_penalty are vLLM sampling extensions --
+		// strip only when this bucket's provider is confirmed genuine OpenAI,
+		// never for ProviderTypeProxy/ProviderTypeAIR (IsProxyLike), which
+		// forward to a router this one doesn't control and could itself be
+		// fronting vLLM.
+		if c.shouldStripVLLMOnlySamplingParams() {
+			body = openaiconv.StripVLLMOnlySamplingParams(body)
 		}
 
 		if c.mode.IsImageGeneration || c.mode.IsImageEdit {
