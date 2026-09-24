@@ -264,6 +264,55 @@ func TestOpenAIToAnthropic_ResponseFormatJSONSchemaPreservesExplicitAdditionalPr
 	assert.Equal(t, true, schema["additionalProperties"], "explicit client choice must not be overridden")
 }
 
+// TestOpenAIToAnthropic_ResponseFormatJSONSchemaDropsTypeUnionAlongsideEnum
+// covers a live-reproduced Anthropic validator quirk: a nullable enum field
+// shaped as OpenAI's own convention (type: ["string","null"], enum includes
+// null as a member) makes Anthropic reject every enum value against the
+// union as a whole -- "Invalid schema: Enum value 'derailment' does not
+// match declared type '['string', 'null']'" -- even though "derailment"
+// plainly satisfies the "string" half. "enum" is already fully
+// self-describing (null is one of its own members here), so the redundant
+// "type" array is dropped; a single-string "type" alongside "enum" is left
+// alone since that combination works fine.
+func TestOpenAIToAnthropic_ResponseFormatJSONSchemaDropsTypeUnionAlongsideEnum(t *testing.T) {
+	result, err := OpenAIToAnthropic([]byte(`{
+		"model":"claude-haiku-4-5",
+		"messages":[{"role":"user","content":"test"}],
+		"response_format":{
+			"type":"json_schema",
+			"json_schema":{
+				"name":"result",
+				"schema":{
+					"type":"object",
+					"properties":{
+						"incident_type":{
+							"enum":["derailment","collision",null],
+							"type":["string","null"]
+						},
+						"title":{"enum":["a","b"],"type":"string"}
+					}
+				}
+			}
+		}
+	}`), "claude-haiku-4-5", true)
+	require.NoError(t, err)
+
+	var request map[string]interface{}
+	require.NoError(t, json.Unmarshal(result, &request))
+	schema := request["output_config"].(map[string]interface{})["format"].(map[string]interface{})["schema"].(map[string]interface{})
+	properties := schema["properties"].(map[string]interface{})
+
+	incidentType := properties["incident_type"].(map[string]interface{})
+	_, hasType := incidentType["type"]
+	assert.False(t, hasType, "the union-typed \"type\" array must be dropped when \"enum\" is present")
+	assert.Equal(t, []interface{}{"derailment", "collision", nil}, incidentType["enum"], "enum itself, including its null member, must survive untouched")
+
+	// A single-string "type" alongside "enum" is a different, working
+	// combination -- must not be touched by this fixup.
+	title := properties["title"].(map[string]interface{})
+	assert.Equal(t, "string", title["type"])
+}
+
 func TestOpenAIToAnthropic_ResponseFormatJSONObjectForbidsMarkdownFences(t *testing.T) {
 	result, err := OpenAIToAnthropic([]byte(`{
 		"model":"claude-sonnet-4-6",

@@ -258,25 +258,41 @@ func OpenAIToAnthropic(openAIBody []byte, model string, isRealAnthropicBackend b
 	return json.Marshal(anthropicReq)
 }
 
-// normalizeSchemaForAnthropicOutput returns a deep copy of schema with
-// "additionalProperties": false added to every object-typed node that
-// doesn't already set the key. Anthropic's native Structured Outputs
-// (output_config.format.schema) requires this explicitly on every object
-// node -- confirmed live: "output_config.format.schema: For 'object' type,
-// 'additionalProperties' must be explicitly set to false" -- unlike OpenAI,
-// which only requires it when the client opts into strict:true and otherwise
-// tolerates its absence. A client's schema built for OpenAI's non-strict
-// json_schema mode (or any schema that simply omits the key) would 400
-// outright without this: rather than fall back to a weaker prompt-only JSON
-// instruction and lose the client's actual constraints (enums, maxLength,
-// required fields, ...), the schema is normalized to satisfy Anthropic's
-// stricter requirement while keeping it in force.
+// normalizeSchemaForAnthropicOutput returns a deep copy of schema with two
+// fixups applied to every node, needed before Anthropic's native Structured
+// Outputs (output_config.format.schema) will accept an OpenAI-shaped
+// response_format.json_schema:
 //
-// A node counts as object-typed when its "type" is (or includes) "object",
-// or -- since JSON Schema doesn't require "type" to be present -- when it
-// has a "properties" key at all, a near-universal real-world signal even
-// without an explicit type. An explicit "additionalProperties" the client
-// already set (false, true, or a nested schema) is left untouched.
+//  1. "additionalProperties": false is added to every object-typed node that
+//     doesn't already set the key. Anthropic requires this explicitly on
+//     every object node -- confirmed live: "output_config.format.schema: For
+//     'object' type, 'additionalProperties' must be explicitly set to
+//     false" -- unlike OpenAI, which only requires it when the client opts
+//     into strict:true and otherwise tolerates its absence. A client's
+//     schema built for OpenAI's non-strict json_schema mode (or any schema
+//     that simply omits the key) would 400 outright without this.
+//
+//  2. A "type" array (JSON Schema's union-type syntax, e.g. ["string",
+//     "null"] for a nullable field) is dropped whenever the same node also
+//     has an "enum". Confirmed live: Anthropic's validator rejects every
+//     enum value against a union type as a whole instead of accepting a
+//     value that matches any member -- "Invalid schema: Enum value
+//     'derailment' does not match declared type '['string', 'null']'" --
+//     even though "derailment" plainly satisfies the "string" half of the
+//     union. "enum" is already fully self-describing (including null as an
+//     explicit member, as OpenAI's own nullable-enum convention does), so
+//     dropping the redundant "type" array loses nothing. A single-string
+//     "type" alongside "enum" is left alone -- only the array/union form
+//     breaks Anthropic's validator.
+//
+// Both fixups only ever fill in or remove what OpenAI's own contract leaves
+// optional; an explicit "additionalProperties" the client already set
+// (false, true, or a nested schema) is always left untouched.
+//
+// A node counts as object-typed for fixup 1 when its "type" is (or
+// includes) "object", or -- since JSON Schema doesn't require "type" to be
+// present -- when it has a "properties" key at all, a near-universal
+// real-world signal even without an explicit type.
 func normalizeSchemaForAnthropicOutput(schema any) any {
 	switch node := schema.(type) {
 	case map[string]interface{}:
@@ -286,6 +302,11 @@ func normalizeSchemaForAnthropicOutput(schema any) any {
 		}
 		if _, hasAdditionalProperties := out["additionalProperties"]; !hasAdditionalProperties && isObjectSchemaNode(node) {
 			out["additionalProperties"] = false
+		}
+		if _, hasEnum := out["enum"]; hasEnum {
+			if _, typeIsUnion := out["type"].([]interface{}); typeIsUnion {
+				delete(out, "type")
+			}
 		}
 		return out
 	case []interface{}:
