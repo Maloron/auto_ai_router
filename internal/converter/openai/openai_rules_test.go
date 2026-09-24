@@ -595,6 +595,91 @@ func TestReplaceModelInBody(t *testing.T) {
 			newModel:  "gpt-5.5",
 			wantModel: "openai/gpt-5.5",
 		},
+		{
+			name:      "unicode-escaped slash, lowercase hex",
+			body:      "{\"model\":\"openai\\u002fgpt-5.5\",\"messages\":[]}",
+			oldModel:  "openai/gpt-5.5",
+			newModel:  "gpt-5.5",
+			wantModel: "gpt-5.5",
+		},
+		{
+			name:      "unicode-escaped slash, uppercase hex",
+			body:      "{\"model\":\"openai\\u002Fgpt-5.5\",\"messages\":[]}",
+			oldModel:  "openai/gpt-5.5",
+			newModel:  "gpt-5.5",
+			wantModel: "gpt-5.5",
+		},
+		{
+			// g is 'g' -- an escape that has nothing to do with the slash,
+			// placed elsewhere in the value, still equally valid JSON for the
+			// same string.
+			name:      "unrelated unicode escape inside the value",
+			body:      "{\"model\":\"openai/\\u0067pt-5.5\",\"messages\":[]}",
+			oldModel:  "openai/gpt-5.5",
+			newModel:  "gpt-5.5",
+			wantModel: "gpt-5.5",
+		},
+		{
+			name:      "space before the colon",
+			body:      `{"model" :"openai/gpt-5.5","messages":[]}`,
+			oldModel:  "openai/gpt-5.5",
+			newModel:  "gpt-5.5",
+			wantModel: "gpt-5.5",
+		},
+		{
+			name:      "space on both sides of the colon",
+			body:      `{"model" : "openai/gpt-5.5","messages":[]}`,
+			oldModel:  "openai/gpt-5.5",
+			newModel:  "gpt-5.5",
+			wantModel: "gpt-5.5",
+		},
+		{
+			name:      "two or more spaces after the colon",
+			body:      `{"model":   "openai/gpt-5.5","messages":[]}`,
+			oldModel:  "openai/gpt-5.5",
+			newModel:  "gpt-5.5",
+			wantModel: "gpt-5.5",
+		},
+		{
+			name:      "tab after the colon",
+			body:      "{\"model\":\t\"openai/gpt-5.5\",\"messages\":[]}",
+			oldModel:  "openai/gpt-5.5",
+			newModel:  "gpt-5.5",
+			wantModel: "gpt-5.5",
+		},
+		{
+			name:      "newline after the colon",
+			body:      "{\"model\":\n  \"openai/gpt-5.5\",\"messages\":[]}",
+			oldModel:  "openai/gpt-5.5",
+			newModel:  "gpt-5.5",
+			wantModel: "gpt-5.5",
+		},
+		{
+			name:      "CRLF after the colon",
+			body:      "{\"model\":\r\n\"openai/gpt-5.5\",\"messages\":[]}",
+			oldModel:  "openai/gpt-5.5",
+			newModel:  "gpt-5.5",
+			wantModel: "gpt-5.5",
+		},
+		{
+			name:      "unicode escape in the key itself",
+			body:      "{\"\\u006dodel\":\"openai/gpt-5.5\",\"messages\":[]}",
+			oldModel:  "openai/gpt-5.5",
+			newModel:  "gpt-5.5",
+			wantModel: "gpt-5.5",
+		},
+		{
+			// Duplicate top-level keys aren't valid per a strict reading of the
+			// JSON spec, but every real-world parser (including encoding/json's
+			// map decoding) resolves it last-value-wins -- worth pinning down
+			// explicitly since the fallback's re-encode naturally collapses the
+			// duplicate into a single key either way.
+			name:      "duplicate model key, last copy escaped",
+			body:      `{"model":"openai/gpt-5.5","messages":[],"model":"openai\/gpt-5.5"}`,
+			oldModel:  "openai/gpt-5.5",
+			newModel:  "gpt-5.5",
+			wantModel: "gpt-5.5",
+		},
 	}
 
 	for _, tt := range tests {

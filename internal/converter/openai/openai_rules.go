@@ -64,29 +64,42 @@ func UpdateJSONField(body []byte, mapping ModelParamsMapping) []byte {
 // the rewrite -- which would otherwise forward the client-facing alias
 // instead of the resolved real model name to the upstream, which then 400s
 // "model not found" for a name it never heard of.
+//
+// The fast path only runs when `"model"` appears exactly once: with two or
+// more occurrences (a client sending a duplicate top-level key, not valid
+// per a strict JSON grammar but accepted and resolved last-value-wins by
+// every real parser, this one's own fallback included), bytes.Replace's
+// count=1 would touch only the first occurrence and leave a second, stale
+// "model" value in the body -- the one that would actually win once
+// whatever's on the other end parses it. Falling back to the parse-based
+// path there produces a single, unambiguous "model" key instead.
 func ReplaceModelInBody(body []byte, oldModel, newModel string) []byte {
 	oldToken, _ := json.Marshal(oldModel) //nolint:errcheck // json.Marshal on a plain string never fails //
 	newToken, _ := json.Marshal(newModel) //nolint:errcheck // json.Marshal on a plain string never fails //
 
-	// Replace "model":"oldModel" → "model":"newModel"
-	// Handles both with and without spaces after colon
-	patterns := [][]byte{
-		append([]byte(`"model":`), oldToken...),
-		append([]byte(`"model": `), oldToken...),
-	}
-	replacements := [][]byte{
-		append([]byte(`"model":`), newToken...),
-		append([]byte(`"model": `), newToken...),
-	}
+	if bytes.Count(body, quotedModelKeyBytes) == 1 {
+		// Replace "model":"oldModel" → "model":"newModel"
+		// Handles both with and without spaces after colon
+		patterns := [][]byte{
+			append([]byte(`"model":`), oldToken...),
+			append([]byte(`"model": `), oldToken...),
+		}
+		replacements := [][]byte{
+			append([]byte(`"model":`), newToken...),
+			append([]byte(`"model": `), newToken...),
+		}
 
-	for i, pattern := range patterns {
-		if bytes.Contains(body, pattern) {
-			return bytes.Replace(body, pattern, replacements[i], 1)
+		for i, pattern := range patterns {
+			if bytes.Contains(body, pattern) {
+				return bytes.Replace(body, pattern, replacements[i], 1)
+			}
 		}
 	}
 
 	return replaceModelFieldViaParse(body, oldModel, newToken)
 }
+
+var quotedModelKeyBytes = []byte(`"model"`)
 
 // replaceModelFieldViaParse is ReplaceModelInBody's fallback for a body whose
 // "model" field is present but encoded differently than json.Marshal would
