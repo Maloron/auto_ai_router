@@ -719,11 +719,13 @@ func initializeBalancer(
 }
 
 // balancerRedisBackend returns the backend for the balancer's credential/model
-// counters: counters shared with other deployments under
-// redis.balancer_key_prefix when it is set, otherwise the deployment's own
-// backend as is (redis.key_prefix).
+// counters. By default redis.balancer_key_prefix equals redis.key_prefix and
+// the deployment's own backend is used as is (current behaviour). A different
+// prefix gives counters shared with other deployments that set the same value.
+// The empty check only covers configs built in code (e.g. tests), where the
+// YAML default is not applied.
 func balancerRedisBackend(cfg config.RedisConfig, own *ratelimit.RedisBackend) *ratelimit.RedisBackend {
-	if cfg.BalancerKeyPrefix == "" {
+	if cfg.BalancerKeyPrefix == "" || cfg.BalancerKeyPrefix == cfg.KeyPrefix {
 		return own
 	}
 	return own.WithSharedKeyPrefix(cfg.BalancerKeyPrefix)

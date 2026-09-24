@@ -1512,7 +1512,8 @@ func TestRedisConfig_BalancerKeyPrefix(t *testing.T) {
 		expectedKey      string
 		expectedBalancer string
 	}{
-		{name: "omitted", yamlLines: "  key_prefix: \"ru01\"\n", expectedKey: "ru01", expectedBalancer: ""},
+		{name: "omitted defaults to key_prefix", yamlLines: "  key_prefix: \"ru01\"\n", expectedKey: "ru01", expectedBalancer: "ru01"},
+		{name: "both omitted", yamlLines: "", expectedKey: "rl:", expectedBalancer: "rl:"},
 		{name: "explicit", yamlLines: "  key_prefix: \"ru01\"\n  balancer_key_prefix: \"air-balancer:\"\n", expectedKey: "ru01", expectedBalancer: "air-balancer:"},
 		{name: "from env", yamlLines: "  balancer_key_prefix: \"os.environ/TEST_BALANCER_PREFIX\"\n", expectedKey: "rl:", expectedBalancer: "env-balancer:"},
 	}

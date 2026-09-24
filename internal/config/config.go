@@ -430,7 +430,7 @@ type RedisConfig struct {
 	KeyPrefix string `yaml:"key_prefix,omitempty"`
 
 	// BalancerKeyPrefix overrides KeyPrefix for the balancer's credential/model
-	// RPM/TPM counters only (default: empty = use KeyPrefix). Deployments that
+	// RPM/TPM counters only (default: KeyPrefix, i.e. current behaviour). Deployments that
 	// call the same upstream credentials should set the same value so the
 	// provider quota is counted jointly, while budget, auth and response-store
 	// keys stay isolated under each deployment's KeyPrefix.
@@ -557,6 +557,9 @@ func (r *RedisConfig) UnmarshalYAML(value *yaml.Node) error {
 	// Apply default key prefix
 	if r.KeyPrefix == "" {
 		r.KeyPrefix = "rl:"
+	}
+	if r.BalancerKeyPrefix == "" {
+		r.BalancerKeyPrefix = r.KeyPrefix
 	}
 
 	return nil
@@ -1786,6 +1789,7 @@ func defaultRedisConfig() RedisConfig {
 		Password:          "",
 		SelectDB:          0,
 		KeyPrefix:         "rl:",
+		BalancerKeyPrefix: "rl:",
 		TLSEnabled:        false,
 		ConnectTimeout:    5 * time.Second,
 		ConnWriteTimeout:  10 * time.Second,

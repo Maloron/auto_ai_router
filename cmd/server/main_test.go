@@ -152,7 +152,12 @@ func TestInitializeBalancerReturnsHybridBackendForCallerToClose(t *testing.T) {
 func TestBalancerRedisBackend(t *testing.T) {
 	shared := ratelimit.NewRedisBackendFromClient(nil, "ru01")
 
-	t.Run("empty balancer prefix keeps the shared backend", func(t *testing.T) {
+	t.Run("default balancer prefix (equal to key prefix) keeps the deployment backend", func(t *testing.T) {
+		got := balancerRedisBackend(config.RedisConfig{KeyPrefix: "ru01", BalancerKeyPrefix: "ru01"}, shared)
+		assert.Same(t, shared, got)
+	})
+
+	t.Run("empty balancer prefix in a code-built config keeps the deployment backend", func(t *testing.T) {
 		got := balancerRedisBackend(config.RedisConfig{KeyPrefix: "ru01"}, shared)
 		assert.Same(t, shared, got)
 	})
