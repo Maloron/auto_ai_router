@@ -574,6 +574,27 @@ func TestReplaceModelInBody(t *testing.T) {
 			newModel:  "gpt-5",
 			wantModel: "gpt-4o",
 		},
+		{
+			// json.Marshal never escapes '/', so the fast byte-level path's
+			// pattern is `"model":"openai/gpt-5.5"` -- this body encodes the
+			// same string with an escaped slash instead (equally valid JSON,
+			// e.g. how PHP's json_encode serializes by default). Regression
+			// test for the bug where this silently fell through unchanged,
+			// forwarding the client alias instead of the real model name and
+			// getting a 400 from the upstream ("model not found").
+			name:      "escaped forward slash falls back to parse",
+			body:      `{"model":"openai\/gpt-5.5","messages":[]}`,
+			oldModel:  "openai/gpt-5.5",
+			newModel:  "gpt-5.5",
+			wantModel: "gpt-5.5",
+		},
+		{
+			name:      "escaped forward slash, no match, falls back and returns unchanged",
+			body:      `{"model":"openai\/gpt-5.5","messages":[]}`,
+			oldModel:  "nonexistent",
+			newModel:  "gpt-5.5",
+			wantModel: "openai/gpt-5.5",
+		},
 	}
 
 	for _, tt := range tests {
@@ -585,6 +606,20 @@ func TestReplaceModelInBody(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestReplaceModelInBody_EscapedSlashPreservesOtherFields guards the fallback
+// path specifically: messages/tools and any other top-level field must
+// survive the shallow parse-and-reencode untouched, not just the model field.
+func TestReplaceModelInBody_EscapedSlashPreservesOtherFields(t *testing.T) {
+	body := []byte(`{"model":"openai\/gpt-5.5","messages":[{"role":"user","content":"hi"}],"max_tokens":5,"stream":true}`)
+	result := bodyToMap(t, ReplaceModelInBody(body, "openai/gpt-5.5", "gpt-5.5"))
+	assert.Equal(t, "gpt-5.5", result["model"])
+	assert.EqualValues(t, 5, result["max_tokens"])
+	assert.Equal(t, true, result["stream"])
+	messages, ok := result["messages"].([]interface{})
+	require.True(t, ok, "expected messages array to survive, got %T", result["messages"])
+	require.Len(t, messages, 1)
 }
 
 // --- ConvertWebSearchTools tests ---

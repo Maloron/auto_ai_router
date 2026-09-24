@@ -53,7 +53,17 @@ func UpdateJSONField(body []byte, mapping ModelParamsMapping) []byte {
 }
 
 // ReplaceModelInBody replaces the "model" field value in a JSON body.
-// Uses byte-level replacement of `"model":"oldValue"` to avoid full re-serialization.
+// Uses byte-level replacement of `"model":"oldValue"` to avoid full
+// re-serialization in the common case. json.Marshal never escapes a forward
+// slash, so this fast path only matches when the body encodes the model
+// string the same way -- a client (or intermediary) that escapes it as
+// "openai\/gpt-5.5" instead of "openai/gpt-5.5" is equally valid JSON but
+// won't byte-match. Falls back to a real (but still shallow, no
+// messages/tools re-encoding cost beyond a single top-level pass) parse of
+// just the "model" field so an alternate valid encoding can't silently skip
+// the rewrite -- which would otherwise forward the client-facing alias
+// instead of the resolved real model name to the upstream, which then 400s
+// "model not found" for a name it never heard of.
 func ReplaceModelInBody(body []byte, oldModel, newModel string) []byte {
 	oldToken, _ := json.Marshal(oldModel) //nolint:errcheck // json.Marshal on a plain string never fails //
 	newToken, _ := json.Marshal(newModel) //nolint:errcheck // json.Marshal on a plain string never fails //
@@ -75,7 +85,33 @@ func ReplaceModelInBody(body []byte, oldModel, newModel string) []byte {
 		}
 	}
 
-	return body
+	return replaceModelFieldViaParse(body, oldModel, newToken)
+}
+
+// replaceModelFieldViaParse is ReplaceModelInBody's fallback for a body whose
+// "model" field is present but encoded differently than json.Marshal would
+// produce (e.g. an escaped forward slash). A shallow map[string]json.RawMessage
+// pass is enough: every other field (messages, tools, ...) is carried through
+// untouched as raw bytes, so this doesn't pay to re-parse or re-encode them.
+func replaceModelFieldViaParse(body []byte, oldModel string, newToken []byte) []byte {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(body, &top); err != nil {
+		return body
+	}
+	raw, ok := top["model"]
+	if !ok {
+		return body
+	}
+	var current string
+	if err := json.Unmarshal(raw, &current); err != nil || current != oldModel {
+		return body
+	}
+	top["model"] = newToken
+	out, err := json.Marshal(top)
+	if err != nil {
+		return body
+	}
+	return out
 }
 
 // defaultParamSynonymGroups lists sets of request keys that set the same value. A
