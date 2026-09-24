@@ -701,11 +701,11 @@ func initializeBalancer(
 		limiterBackend := balancerRedisBackend(cfg.Redis, redisBackend)
 		if cfg.Redis.Hybrid {
 			log.Info("Rate limiter: using hybrid backend (local decisions, async Redis sync)",
-				"sync_interval", cfg.Redis.SyncInterval, "key_prefix", limiterBackend.KeyPrefix())
+				"sync_interval", cfg.Redis.SyncInterval, "balancer_key_prefix", limiterBackend.KeyPrefix())
 			hybridBackend = ratelimit.NewHybridBackend(limiterBackend, cfg.Redis.SyncInterval, log, metrics)
 			rateLimiter = ratelimit.NewWithHybrid(hybridBackend)
 		} else {
-			log.Info("Rate limiter: using Redis backend", "key_prefix", limiterBackend.KeyPrefix())
+			log.Info("Rate limiter: using Redis backend", "balancer_key_prefix", limiterBackend.KeyPrefix())
 			rateLimiter = ratelimit.NewWithRedis(limiterBackend)
 		}
 	} else {
@@ -719,13 +719,14 @@ func initializeBalancer(
 }
 
 // balancerRedisBackend returns the backend for the balancer's credential/model
-// counters: the shared backend under redis.balancer_key_prefix when it is set,
-// otherwise the shared backend as is (redis.key_prefix).
-func balancerRedisBackend(cfg config.RedisConfig, shared *ratelimit.RedisBackend) *ratelimit.RedisBackend {
+// counters: counters shared with other deployments under
+// redis.balancer_key_prefix when it is set, otherwise the deployment's own
+// backend as is (redis.key_prefix).
+func balancerRedisBackend(cfg config.RedisConfig, own *ratelimit.RedisBackend) *ratelimit.RedisBackend {
 	if cfg.BalancerKeyPrefix == "" {
-		return shared
+		return own
 	}
-	return shared.WithKeyPrefix(cfg.BalancerKeyPrefix)
+	return own.WithSharedKeyPrefix(cfg.BalancerKeyPrefix)
 }
 
 func convertFailBanRules(

@@ -153,6 +153,8 @@ The `{c:credname}` portion is a Redis **hash tag** — it ensures all four keys 
 
 When `balancer_key_prefix` is set, the four `rpm:`/`tpm:` keys above use it instead of `key_prefix`; response, budget and auth keys stay under `key_prefix`.
 
+Rate-limit keys expire after `key_ttl` seconds of inactivity (default **120 seconds**) via Redis `EXPIRE`. Response keys use the TTL from the `ttl` field of the request, or persist indefinitely when `ttl: 0`.
+
 ### Sharing credential limits between deployments
 
 A credential's RPM/TPM limit usually mirrors the provider's quota for that account. If several router deployments (each with its own `key_prefix`) call the same upstream credentials, each one counts only its own traffic, and together they can exceed the provider quota. Give them the same `balancer_key_prefix` so the credential/model counters are shared, while each deployment keeps its budget, auth and response-store keys isolated:
@@ -169,9 +171,16 @@ redis:
   balancer_key_prefix: "air-balancer:"
 ```
 
-Only do this when credentials with the same name point to the same upstream account in every deployment that shares the prefix. Changing `key_prefix` itself is not a substitute: it would also merge budget reservations, key-level limits and stored responses.
+Requirements for every deployment that shares the prefix:
 
-Rate-limit keys expire after `key_ttl` seconds of inactivity (default **120 seconds**) via Redis `EXPIRE`. Response keys use the TTL from the `ttl` field of the request, or persist indefinitely when `ttl: 0`.
+- the same Redis/Valkey instance and the same `select_db`;
+- credentials with the same name point to the same upstream account;
+- the same `rpm`/`tpm` for a shared credential/model: each deployment compares the joint counter with its own limit, so the highest configured limit effectively wins;
+- `key_ttl` of at least 60 seconds (the counter window).
+
+Shared counters are never deleted by the router: when a model disappears from one deployment, its keys are left to expire via `key_ttl`, so usage recorded by the other deployments is kept. While a deployment is being switched to a new `balancer_key_prefix`, old and new pods count separately until the rollout finishes.
+
+Changing `key_prefix` itself is not a substitute: it would also merge budget reservations, key-level limits and stored responses.
 
 ## How Rate Limiting Works in Redis
 
