@@ -159,6 +159,111 @@ func TestOpenAIToAnthropic_ResponseFormatJSONSchemaIncludesSchema(t *testing.T) 
 	assert.Contains(t, schema["properties"], "city")
 }
 
+// TestOpenAIToAnthropic_ResponseFormatJSONSchemaAddsMissingAdditionalProperties
+// covers the live-reproduced bug: Anthropic's native Structured Outputs
+// requires "additionalProperties": false on every object node explicitly --
+// unlike OpenAI, which only requires it under strict:true. A client's
+// non-strict schema (or any schema that simply omits the key, object or
+// nested) 400s outright there without this normalization:
+// "output_config.format.schema: For 'object' type, 'additionalProperties'
+// must be explicitly set to false".
+func TestOpenAIToAnthropic_ResponseFormatJSONSchemaAddsMissingAdditionalProperties(t *testing.T) {
+	result, err := OpenAIToAnthropic([]byte(`{
+		"model":"claude-haiku-4-5",
+		"messages":[{"role":"user","content":"classify this"}],
+		"response_format":{
+			"type":"json_schema",
+			"json_schema":{
+				"name":"result",
+				"schema":{
+					"type":"object",
+					"properties":{
+						"title_ru":{"type":"string","maxLength":400},
+						"blocks":{"type":"array","items":{"type":"string","enum":["I","II"]}}
+					},
+					"required":["title_ru"]
+				},
+				"strict":false
+			}
+		}
+	}`), "claude-haiku-4-5", true)
+	require.NoError(t, err)
+
+	var request map[string]interface{}
+	require.NoError(t, json.Unmarshal(result, &request))
+	schema := request["output_config"].(map[string]interface{})["format"].(map[string]interface{})["schema"].(map[string]interface{})
+
+	assert.Equal(t, false, schema["additionalProperties"], "top-level object node must get additionalProperties:false")
+	// The client's actual constraints (enum, maxLength, required) must survive
+	// the normalization untouched -- this isn't a fallback to a generic
+	// "respond with JSON" instruction, the schema is still enforced.
+	assert.Equal(t, []interface{}{"title_ru"}, schema["required"])
+	properties := schema["properties"].(map[string]interface{})
+	assert.EqualValues(t, 400, properties["title_ru"].(map[string]interface{})["maxLength"])
+}
+
+// TestOpenAIToAnthropic_ResponseFormatJSONSchemaNormalizesNestedObjectWithoutExplicitType
+// covers a nested object schema that has no explicit "type": "object" at
+// all -- a "properties" key alone is a near-universal real-world signal of
+// an object node, so it must be normalized too, not just the schema root.
+func TestOpenAIToAnthropic_ResponseFormatJSONSchemaNormalizesNestedObjectWithoutExplicitType(t *testing.T) {
+	result, err := OpenAIToAnthropic([]byte(`{
+		"model":"claude-haiku-4-5",
+		"messages":[{"role":"user","content":"test"}],
+		"response_format":{
+			"type":"json_schema",
+			"json_schema":{
+				"name":"result",
+				"schema":{
+					"type":"object",
+					"properties":{
+						"address":{
+							"properties":{"city":{"type":"string"}}
+						}
+					}
+				}
+			}
+		}
+	}`), "claude-haiku-4-5", true)
+	require.NoError(t, err)
+
+	var request map[string]interface{}
+	require.NoError(t, json.Unmarshal(result, &request))
+	schema := request["output_config"].(map[string]interface{})["format"].(map[string]interface{})["schema"].(map[string]interface{})
+	address := schema["properties"].(map[string]interface{})["address"].(map[string]interface{})
+
+	assert.Equal(t, false, schema["additionalProperties"])
+	assert.Equal(t, false, address["additionalProperties"], "nested object with only 'properties' (no explicit type) must be normalized too")
+}
+
+// TestOpenAIToAnthropic_ResponseFormatJSONSchemaPreservesExplicitAdditionalProperties
+// covers the case where the client already set additionalProperties
+// themselves (true, or a nested schema) -- the normalizer must never
+// override an explicit choice, only fill in an absent one.
+func TestOpenAIToAnthropic_ResponseFormatJSONSchemaPreservesExplicitAdditionalProperties(t *testing.T) {
+	result, err := OpenAIToAnthropic([]byte(`{
+		"model":"claude-haiku-4-5",
+		"messages":[{"role":"user","content":"test"}],
+		"response_format":{
+			"type":"json_schema",
+			"json_schema":{
+				"name":"result",
+				"schema":{
+					"type":"object",
+					"properties":{"city":{"type":"string"}},
+					"additionalProperties":true
+				}
+			}
+		}
+	}`), "claude-haiku-4-5", true)
+	require.NoError(t, err)
+
+	var request map[string]interface{}
+	require.NoError(t, json.Unmarshal(result, &request))
+	schema := request["output_config"].(map[string]interface{})["format"].(map[string]interface{})["schema"].(map[string]interface{})
+	assert.Equal(t, true, schema["additionalProperties"], "explicit client choice must not be overridden")
+}
+
 func TestOpenAIToAnthropic_ResponseFormatJSONObjectForbidsMarkdownFences(t *testing.T) {
 	result, err := OpenAIToAnthropic([]byte(`{
 		"model":"claude-sonnet-4-6",
