@@ -574,6 +574,126 @@ func TestReplaceModelInBody(t *testing.T) {
 			newModel:  "gpt-5",
 			wantModel: "gpt-4o",
 		},
+		{
+			// json.Marshal never escapes '/', so the fast byte-level path's
+			// pattern is `"model":"openai/gpt-5.5"` -- this body encodes the
+			// same string with an escaped slash instead (equally valid JSON,
+			// e.g. how PHP's json_encode serializes by default). Regression
+			// test for the bug where this silently fell through unchanged,
+			// forwarding the client alias instead of the real model name and
+			// getting a 400 from the upstream ("model not found").
+			name:      "escaped forward slash falls back to parse",
+			body:      `{"model":"openai\/gpt-5.5","messages":[]}`,
+			oldModel:  "openai/gpt-5.5",
+			newModel:  "gpt-5.5",
+			wantModel: "gpt-5.5",
+		},
+		{
+			name:      "escaped forward slash, no match, falls back and returns unchanged",
+			body:      `{"model":"openai\/gpt-5.5","messages":[]}`,
+			oldModel:  "nonexistent",
+			newModel:  "gpt-5.5",
+			wantModel: "openai/gpt-5.5",
+		},
+		{
+			name:      "unicode-escaped slash, lowercase hex",
+			body:      "{\"model\":\"openai\\u002fgpt-5.5\",\"messages\":[]}",
+			oldModel:  "openai/gpt-5.5",
+			newModel:  "gpt-5.5",
+			wantModel: "gpt-5.5",
+		},
+		{
+			name:      "unicode-escaped slash, uppercase hex",
+			body:      "{\"model\":\"openai\\u002Fgpt-5.5\",\"messages\":[]}",
+			oldModel:  "openai/gpt-5.5",
+			newModel:  "gpt-5.5",
+			wantModel: "gpt-5.5",
+		},
+		{
+			// g is 'g' -- an escape that has nothing to do with the slash,
+			// placed elsewhere in the value, still equally valid JSON for the
+			// same string.
+			name:      "unrelated unicode escape inside the value",
+			body:      "{\"model\":\"openai/\\u0067pt-5.5\",\"messages\":[]}",
+			oldModel:  "openai/gpt-5.5",
+			newModel:  "gpt-5.5",
+			wantModel: "gpt-5.5",
+		},
+		{
+			name:      "space before the colon",
+			body:      `{"model" :"openai/gpt-5.5","messages":[]}`,
+			oldModel:  "openai/gpt-5.5",
+			newModel:  "gpt-5.5",
+			wantModel: "gpt-5.5",
+		},
+		{
+			name:      "space on both sides of the colon",
+			body:      `{"model" : "openai/gpt-5.5","messages":[]}`,
+			oldModel:  "openai/gpt-5.5",
+			newModel:  "gpt-5.5",
+			wantModel: "gpt-5.5",
+		},
+		{
+			name:      "two or more spaces after the colon",
+			body:      `{"model":   "openai/gpt-5.5","messages":[]}`,
+			oldModel:  "openai/gpt-5.5",
+			newModel:  "gpt-5.5",
+			wantModel: "gpt-5.5",
+		},
+		{
+			name:      "tab after the colon",
+			body:      "{\"model\":\t\"openai/gpt-5.5\",\"messages\":[]}",
+			oldModel:  "openai/gpt-5.5",
+			newModel:  "gpt-5.5",
+			wantModel: "gpt-5.5",
+		},
+		{
+			name:      "newline after the colon",
+			body:      "{\"model\":\n  \"openai/gpt-5.5\",\"messages\":[]}",
+			oldModel:  "openai/gpt-5.5",
+			newModel:  "gpt-5.5",
+			wantModel: "gpt-5.5",
+		},
+		{
+			name:      "CRLF after the colon",
+			body:      "{\"model\":\r\n\"openai/gpt-5.5\",\"messages\":[]}",
+			oldModel:  "openai/gpt-5.5",
+			newModel:  "gpt-5.5",
+			wantModel: "gpt-5.5",
+		},
+		{
+			name:      "unicode escape in the key itself",
+			body:      "{\"\\u006dodel\":\"openai/gpt-5.5\",\"messages\":[]}",
+			oldModel:  "openai/gpt-5.5",
+			newModel:  "gpt-5.5",
+			wantModel: "gpt-5.5",
+		},
+		{
+			// Duplicate top-level keys aren't valid per a strict reading of the
+			// JSON spec, but every real-world parser (including encoding/json's
+			// map decoding) resolves it last-value-wins -- worth pinning down
+			// explicitly since the fallback's re-encode naturally collapses the
+			// duplicate into a single key either way.
+			name:      "duplicate model key, last copy escaped",
+			body:      `{"model":"openai/gpt-5.5","messages":[],"model":"openai\/gpt-5.5"}`,
+			oldModel:  "openai/gpt-5.5",
+			newModel:  "gpt-5.5",
+			wantModel: "gpt-5.5",
+		},
+		{
+			// Both copies byte-identical this time (no escaping difference) --
+			// still must not take the fast path's count=1 bytes.Replace, which
+			// would rewrite only the first copy and leave the second, stale
+			// "openai/gpt-5.5" as the one that wins once anything downstream
+			// parses the body (last-value-wins). Live-reproduced against
+			// production: this exact body 400s "Invalid model" on the
+			// currently deployed (unfixed) image.
+			name:      "duplicate model key, both copies identical",
+			body:      `{"model":"openai/gpt-5.5","model":"openai/gpt-5.5","messages":[]}`,
+			oldModel:  "openai/gpt-5.5",
+			newModel:  "gpt-5.5",
+			wantModel: "gpt-5.5",
+		},
 	}
 
 	for _, tt := range tests {
@@ -585,6 +705,20 @@ func TestReplaceModelInBody(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestReplaceModelInBody_EscapedSlashPreservesOtherFields guards the fallback
+// path specifically: messages/tools and any other top-level field must
+// survive the shallow parse-and-reencode untouched, not just the model field.
+func TestReplaceModelInBody_EscapedSlashPreservesOtherFields(t *testing.T) {
+	body := []byte(`{"model":"openai\/gpt-5.5","messages":[{"role":"user","content":"hi"}],"max_tokens":5,"stream":true}`)
+	result := bodyToMap(t, ReplaceModelInBody(body, "openai/gpt-5.5", "gpt-5.5"))
+	assert.Equal(t, "gpt-5.5", result["model"])
+	assert.EqualValues(t, 5, result["max_tokens"])
+	assert.Equal(t, true, result["stream"])
+	messages, ok := result["messages"].([]interface{})
+	require.True(t, ok, "expected messages array to survive, got %T", result["messages"])
+	require.Len(t, messages, 1)
 }
 
 // --- ConvertWebSearchTools tests ---

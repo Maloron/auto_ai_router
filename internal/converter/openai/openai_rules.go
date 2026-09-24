@@ -53,29 +53,78 @@ func UpdateJSONField(body []byte, mapping ModelParamsMapping) []byte {
 }
 
 // ReplaceModelInBody replaces the "model" field value in a JSON body.
-// Uses byte-level replacement of `"model":"oldValue"` to avoid full re-serialization.
+// Uses byte-level replacement of `"model":"oldValue"` to avoid full
+// re-serialization in the common case. json.Marshal never escapes a forward
+// slash, so this fast path only matches when the body encodes the model
+// string the same way -- a client (or intermediary) that escapes it as
+// "openai\/gpt-5.5" instead of "openai/gpt-5.5" is equally valid JSON but
+// won't byte-match. Falls back to a real (but still shallow, no
+// messages/tools re-encoding cost beyond a single top-level pass) parse of
+// just the "model" field so an alternate valid encoding can't silently skip
+// the rewrite -- which would otherwise forward the client-facing alias
+// instead of the resolved real model name to the upstream, which then 400s
+// "model not found" for a name it never heard of.
+//
+// The fast path only runs when `"model"` appears exactly once: with two or
+// more occurrences (a client sending a duplicate top-level key, not valid
+// per a strict JSON grammar but accepted and resolved last-value-wins by
+// every real parser, this one's own fallback included), bytes.Replace's
+// count=1 would touch only the first occurrence and leave a second, stale
+// "model" value in the body -- the one that would actually win once
+// whatever's on the other end parses it. Falling back to the parse-based
+// path there produces a single, unambiguous "model" key instead.
 func ReplaceModelInBody(body []byte, oldModel, newModel string) []byte {
 	oldToken, _ := json.Marshal(oldModel) //nolint:errcheck // json.Marshal on a plain string never fails //
 	newToken, _ := json.Marshal(newModel) //nolint:errcheck // json.Marshal on a plain string never fails //
 
-	// Replace "model":"oldModel" → "model":"newModel"
-	// Handles both with and without spaces after colon
-	patterns := [][]byte{
-		append([]byte(`"model":`), oldToken...),
-		append([]byte(`"model": `), oldToken...),
-	}
-	replacements := [][]byte{
-		append([]byte(`"model":`), newToken...),
-		append([]byte(`"model": `), newToken...),
-	}
+	if bytes.Count(body, quotedModelKeyBytes) == 1 {
+		// Replace "model":"oldModel" → "model":"newModel"
+		// Handles both with and without spaces after colon
+		patterns := [][]byte{
+			append([]byte(`"model":`), oldToken...),
+			append([]byte(`"model": `), oldToken...),
+		}
+		replacements := [][]byte{
+			append([]byte(`"model":`), newToken...),
+			append([]byte(`"model": `), newToken...),
+		}
 
-	for i, pattern := range patterns {
-		if bytes.Contains(body, pattern) {
-			return bytes.Replace(body, pattern, replacements[i], 1)
+		for i, pattern := range patterns {
+			if bytes.Contains(body, pattern) {
+				return bytes.Replace(body, pattern, replacements[i], 1)
+			}
 		}
 	}
 
-	return body
+	return replaceModelFieldViaParse(body, oldModel, newToken)
+}
+
+var quotedModelKeyBytes = []byte(`"model"`)
+
+// replaceModelFieldViaParse is ReplaceModelInBody's fallback for a body whose
+// "model" field is present but encoded differently than json.Marshal would
+// produce (e.g. an escaped forward slash). A shallow map[string]json.RawMessage
+// pass is enough: every other field (messages, tools, ...) is carried through
+// untouched as raw bytes, so this doesn't pay to re-parse or re-encode them.
+func replaceModelFieldViaParse(body []byte, oldModel string, newToken []byte) []byte {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(body, &top); err != nil {
+		return body
+	}
+	raw, ok := top["model"]
+	if !ok {
+		return body
+	}
+	var current string
+	if err := json.Unmarshal(raw, &current); err != nil || current != oldModel {
+		return body
+	}
+	top["model"] = newToken
+	out, err := json.Marshal(top)
+	if err != nil {
+		return body
+	}
+	return out
 }
 
 // defaultParamSynonymGroups lists sets of request keys that set the same value. A
