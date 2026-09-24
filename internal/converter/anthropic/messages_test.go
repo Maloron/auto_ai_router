@@ -313,6 +313,56 @@ func TestOpenAIToAnthropic_ResponseFormatJSONSchemaDropsTypeUnionAlongsideEnum(t
 	assert.Equal(t, "string", title["type"])
 }
 
+// TestOpenAIToAnthropic_ResponseFormatJSONSchemaDropsNumberMinMax covers the
+// third layer of the same live-reproduced incident: Anthropic's Structured
+// Outputs schema support doesn't include "minimum"/"maximum" on numeric
+// nodes at all -- "output_config.format.schema: For 'number' type,
+// properties maximum, minimum are not supported" -- so they're dropped
+// rather than sent through to 400. Applied to both "number" and "integer".
+func TestOpenAIToAnthropic_ResponseFormatJSONSchemaDropsNumberMinMax(t *testing.T) {
+	result, err := OpenAIToAnthropic([]byte(`{
+		"model":"claude-haiku-4-5",
+		"messages":[{"role":"user","content":"test"}],
+		"response_format":{
+			"type":"json_schema",
+			"json_schema":{
+				"name":"result",
+				"schema":{
+					"type":"object",
+					"properties":{
+						"relevance":{"type":"number","minimum":0,"maximum":1},
+						"count":{"type":"integer","minimum":0,"maximum":100},
+						"title":{"type":"string","maxLength":400}
+					}
+				}
+			}
+		}
+	}`), "claude-haiku-4-5", true)
+	require.NoError(t, err)
+
+	var request map[string]interface{}
+	require.NoError(t, json.Unmarshal(result, &request))
+	schema := request["output_config"].(map[string]interface{})["format"].(map[string]interface{})["schema"].(map[string]interface{})
+	properties := schema["properties"].(map[string]interface{})
+
+	relevance := properties["relevance"].(map[string]interface{})
+	_, hasMin := relevance["minimum"]
+	_, hasMax := relevance["maximum"]
+	assert.False(t, hasMin, "minimum must be dropped from a number node")
+	assert.False(t, hasMax, "maximum must be dropped from a number node")
+	assert.Equal(t, "number", relevance["type"], "the type itself must survive")
+
+	count := properties["count"].(map[string]interface{})
+	_, hasMin = count["minimum"]
+	_, hasMax = count["maximum"]
+	assert.False(t, hasMin, "minimum must be dropped from an integer node too")
+	assert.False(t, hasMax, "maximum must be dropped from an integer node too")
+
+	// Constraints on unrelated types must not be touched by this fixup.
+	title := properties["title"].(map[string]interface{})
+	assert.EqualValues(t, 400, title["maxLength"])
+}
+
 func TestOpenAIToAnthropic_ResponseFormatJSONObjectForbidsMarkdownFences(t *testing.T) {
 	result, err := OpenAIToAnthropic([]byte(`{
 		"model":"claude-sonnet-4-6",
