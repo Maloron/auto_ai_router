@@ -238,7 +238,7 @@ func OpenAIToAnthropic(openAIBody []byte, model string, isRealAnthropicBackend b
 						}
 						anthropicReq.OutputConfig.Format = &AnthropicJSONOutputFormat{
 							Type:   "json_schema",
-							Schema: schema,
+							Schema: normalizeSchemaForAnthropicOutput(schema),
 						}
 						applied = true
 					}
@@ -256,6 +256,64 @@ func OpenAIToAnthropic(openAIBody []byte, model string, isRealAnthropicBackend b
 	}
 
 	return json.Marshal(anthropicReq)
+}
+
+// normalizeSchemaForAnthropicOutput returns a deep copy of schema with
+// "additionalProperties": false added to every object-typed node that
+// doesn't already set the key. Anthropic's native Structured Outputs
+// (output_config.format.schema) requires this explicitly on every object
+// node -- confirmed live: "output_config.format.schema: For 'object' type,
+// 'additionalProperties' must be explicitly set to false" -- unlike OpenAI,
+// which only requires it when the client opts into strict:true and otherwise
+// tolerates its absence. A client's schema built for OpenAI's non-strict
+// json_schema mode (or any schema that simply omits the key) would 400
+// outright without this: rather than fall back to a weaker prompt-only JSON
+// instruction and lose the client's actual constraints (enums, maxLength,
+// required fields, ...), the schema is normalized to satisfy Anthropic's
+// stricter requirement while keeping it in force.
+//
+// A node counts as object-typed when its "type" is (or includes) "object",
+// or -- since JSON Schema doesn't require "type" to be present -- when it
+// has a "properties" key at all, a near-universal real-world signal even
+// without an explicit type. An explicit "additionalProperties" the client
+// already set (false, true, or a nested schema) is left untouched.
+func normalizeSchemaForAnthropicOutput(schema any) any {
+	switch node := schema.(type) {
+	case map[string]interface{}:
+		out := make(map[string]interface{}, len(node))
+		for k, v := range node {
+			out[k] = normalizeSchemaForAnthropicOutput(v)
+		}
+		if _, hasAdditionalProperties := out["additionalProperties"]; !hasAdditionalProperties && isObjectSchemaNode(node) {
+			out["additionalProperties"] = false
+		}
+		return out
+	case []interface{}:
+		out := make([]interface{}, len(node))
+		for i, v := range node {
+			out[i] = normalizeSchemaForAnthropicOutput(v)
+		}
+		return out
+	default:
+		return schema
+	}
+}
+
+func isObjectSchemaNode(node map[string]interface{}) bool {
+	if _, hasProperties := node["properties"]; hasProperties {
+		return true
+	}
+	switch t := node["type"].(type) {
+	case string:
+		return t == "object"
+	case []interface{}:
+		for _, v := range t {
+			if s, _ := v.(string); s == "object" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // buildJSONResponseInstruction builds the system-prompt fallback for requests
