@@ -429,6 +429,13 @@ type RedisConfig struct {
 	// KeyPrefix is prepended to every rate-limit key (default: "rl:").
 	KeyPrefix string `yaml:"key_prefix,omitempty"`
 
+	// BalancerKeyPrefix overrides KeyPrefix for the balancer's credential/model
+	// RPM/TPM counters only (default: empty = use KeyPrefix). Deployments that
+	// call the same upstream credentials should set the same value so the
+	// provider quota is counted jointly, while budget, auth and response-store
+	// keys stay isolated under each deployment's KeyPrefix.
+	BalancerKeyPrefix string `yaml:"balancer_key_prefix,omitempty"`
+
 	TLSEnabled bool `yaml:"tls_enabled,omitempty"`
 
 	ConnectTimeout   time.Duration `yaml:"connect_timeout,omitempty"`    // default: 5s
@@ -467,6 +474,7 @@ func (r *RedisConfig) UnmarshalYAML(value *yaml.Node) error {
 		Password          string   `yaml:"password,omitempty"`
 		SelectDB          string   `yaml:"select_db,omitempty"`
 		KeyPrefix         string   `yaml:"key_prefix,omitempty"`
+		BalancerKeyPrefix string   `yaml:"balancer_key_prefix,omitempty"`
 		TLSEnabled        string   `yaml:"tls_enabled,omitempty"`
 		ConnectTimeout    string   `yaml:"connect_timeout,omitempty"`
 		ConnWriteTimeout  string   `yaml:"conn_write_timeout,omitempty"`
@@ -500,6 +508,7 @@ func (r *RedisConfig) UnmarshalYAML(value *yaml.Node) error {
 	r.Username = resolveEnvString(temp.Username)
 	r.Password = resolveEnvString(temp.Password)
 	r.KeyPrefix = resolveEnvString(temp.KeyPrefix)
+	r.BalancerKeyPrefix = resolveEnvString(temp.BalancerKeyPrefix)
 
 	if r.SelectDB, err = parseField(temp.SelectDB, 0, strconv.Atoi, "redis.select_db"); err != nil {
 		return err

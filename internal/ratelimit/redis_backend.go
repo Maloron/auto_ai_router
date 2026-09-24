@@ -262,6 +262,18 @@ func NewRedisBackendFromClientWithTTL(client valkey.Client, keyPrefix string, ke
 // Client returns the underlying valkey.Client so it can be shared with other components.
 func (b *RedisBackend) Client() valkey.Client { return b.client }
 
+// WithKeyPrefix returns a backend that shares b's client, key TTL and command
+// timeout but namespaces its keys under prefix. The copy does not own the
+// client: close only the original backend.
+func (b *RedisBackend) WithKeyPrefix(prefix string) *RedisBackend {
+	c := *b
+	c.keyPrefix = prefix
+	return &c
+}
+
+// KeyPrefix returns the namespace prepended to every key of this backend.
+func (b *RedisBackend) KeyPrefix() string { return b.keyPrefix }
+
 // Close shuts down the underlying Valkey client.
 func (b *RedisBackend) Close() { b.client.Close() }
 

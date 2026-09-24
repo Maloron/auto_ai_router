@@ -32,6 +32,7 @@ redis:
     - "redis:6379"            # host:port of your Redis/Valkey instance
   password: "os.environ/REDIS_PASSWORD"   # optional; supports env variable syntax
   key_prefix: "rl:"           # namespace prefix for all keys (default: "rl:")
+  # balancer_key_prefix: "air-balancer:"  # optional: shared namespace for credential/model RPM/TPM counters
   force_single_client: true   # set false only for Redis Cluster
   connect_timeout: 5s
   conn_write_timeout: 10s
@@ -51,6 +52,7 @@ redis:
 | `password`            | string   | —       | Redis AUTH password (optional)                        |
 | `select_db`           | int      | `0`     | Redis database index                                  |
 | `key_prefix`          | string   | `"rl:"` | Prefix prepended to every key                         |
+| `balancer_key_prefix` | string   | —       | Prefix for credential/model RPM/TPM counters only     |
 | `tls_enabled`         | bool     | `false` | Enable TLS                                            |
 | `connect_timeout`     | duration | `5s`    | TCP dial timeout                                      |
 | `conn_write_timeout`  | duration | `10s`   | Per-connection write/pipeline timeout                 |
@@ -148,6 +150,26 @@ All keys are namespaced under `key_prefix` (default `rl:`):
 | `rl:response:{id}`                     | Stored Responses API entry                  |
 
 The `{c:credname}` portion is a Redis **hash tag** — it ensures all four keys for a given credential (`cred rpm`, `cred tpm`, `model rpm`, `model tpm`) land in the same hash slot. This is required by valkey-go's multi-key `EVAL` slot validation, which is enforced even on single-node deployments.
+
+When `balancer_key_prefix` is set, the four `rpm:`/`tpm:` keys above use it instead of `key_prefix`; response, budget and auth keys stay under `key_prefix`.
+
+### Sharing credential limits between deployments
+
+A credential's RPM/TPM limit usually mirrors the provider's quota for that account. If several router deployments (each with its own `key_prefix`) call the same upstream credentials, each one counts only its own traffic, and together they can exceed the provider quota. Give them the same `balancer_key_prefix` so the credential/model counters are shared, while each deployment keeps its budget, auth and response-store keys isolated:
+
+```yaml
+# deployment A
+redis:
+  key_prefix: "ru01"
+  balancer_key_prefix: "air-balancer:"
+
+# deployment B
+redis:
+  key_prefix: "ru02"
+  balancer_key_prefix: "air-balancer:"
+```
+
+Only do this when credentials with the same name point to the same upstream account in every deployment that shares the prefix. Changing `key_prefix` itself is not a substitute: it would also merge budget reservations, key-level limits and stored responses.
 
 Rate-limit keys expire after `key_ttl` seconds of inactivity (default **120 seconds**) via Redis `EXPIRE`. Response keys use the TTL from the `ttl` field of the request, or persist indefinitely when `ttl: 0`.
 

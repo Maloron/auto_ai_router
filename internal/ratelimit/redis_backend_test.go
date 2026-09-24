@@ -129,6 +129,37 @@ func TestCmdCtx_ParentDeadlineTighter_ReturnsParent(t *testing.T) {
 
 // ── key helpers ─────────────────────────────────────────────────────────────
 
+func TestRedisBackend_WithKeyPrefix(t *testing.T) {
+	b := &RedisBackend{keyPrefix: "ru01", keyTTL: 60, commandTimeout: 2 * time.Second}
+	c := b.WithKeyPrefix("air-balancer:")
+
+	assert.Equal(t, "air-balancer:rpm:{c:mycred}:m:mycred:mymodel", c.rpmKey("m:mycred:mymodel"))
+	assert.Equal(t, "air-balancer:", c.KeyPrefix())
+	assert.Equal(t, 60, c.keyTTL)
+	assert.Equal(t, 2*time.Second, c.commandTimeout)
+	// The original backend keeps its namespace.
+	assert.Equal(t, "ru01rpm:{c:mycred}:m:mycred:mymodel", b.rpmKey("m:mycred:mymodel"))
+}
+
+// Two deployments with different key_prefix but the same balancer prefix must
+// see each other's traffic for the same credential/model.
+func TestRedisBackend_Integration_WithKeyPrefix_SharedCounters(t *testing.T) {
+	shared := fmt.Sprintf("test:balancer:%d:", time.Now().UnixNano())
+	deployA := redisBackendForTest(t, "test:ru01:").WithKeyPrefix(shared)
+	deployB := redisBackendForTest(t, "test:ru02:").WithKeyPrefix(shared)
+	ctx := context.Background()
+	key := "m:grant:claude-opus-4.6"
+	t.Cleanup(func() { deployA.deleteKey(ctx, key) })
+
+	require.True(t, deployA.tryAllowRPM(ctx, key, 4))
+	require.True(t, deployA.tryAllowRPM(ctx, key, 4))
+	assert.Equal(t, 2, deployB.currentRPM(ctx, key))
+
+	require.True(t, deployB.tryAllowRPM(ctx, key, 4))
+	require.True(t, deployB.tryAllowRPM(ctx, key, 4))
+	assert.False(t, deployB.tryAllowRPM(ctx, key, 4), "joint limit of 4 must be reached across both deployments")
+}
+
 func TestRedisBackend_KeyFunctions(t *testing.T) {
 	b := &RedisBackend{keyPrefix: "rl:"}
 	// Credential key: wrapped in hash tag for slot consistency.
