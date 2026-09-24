@@ -680,6 +680,20 @@ func TestReplaceModelInBody(t *testing.T) {
 			newModel:  "gpt-5.5",
 			wantModel: "gpt-5.5",
 		},
+		{
+			// Both copies byte-identical this time (no escaping difference) --
+			// still must not take the fast path's count=1 bytes.Replace, which
+			// would rewrite only the first copy and leave the second, stale
+			// "openai/gpt-5.5" as the one that wins once anything downstream
+			// parses the body (last-value-wins). Live-reproduced against
+			// production: this exact body 400s "Invalid model" on the
+			// currently deployed (unfixed) image.
+			name:      "duplicate model key, both copies identical",
+			body:      `{"model":"openai/gpt-5.5","model":"openai/gpt-5.5","messages":[]}`,
+			oldModel:  "openai/gpt-5.5",
+			newModel:  "gpt-5.5",
+			wantModel: "gpt-5.5",
+		},
 	}
 
 	for _, tt := range tests {
