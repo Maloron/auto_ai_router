@@ -433,7 +433,9 @@ type RedisConfig struct {
 	// RPM/TPM counters only (default: KeyPrefix, i.e. current behaviour). Deployments that
 	// call the same upstream credentials should set the same value so the
 	// provider quota is counted jointly, while budget, auth and response-store
-	// keys stay isolated under each deployment's KeyPrefix.
+	// keys stay isolated under each deployment's KeyPrefix. The shared value must
+	// differ from the KeyPrefix of every such deployment: counters are treated as
+	// shared (never deleted) only where BalancerKeyPrefix != KeyPrefix.
 	BalancerKeyPrefix string `yaml:"balancer_key_prefix,omitempty"`
 
 	TLSEnabled bool `yaml:"tls_enabled,omitempty"`
