@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -47,4 +48,46 @@ func TestRecordRedisError_NilMetricsDoesNotPanic(t *testing.T) {
 	assert.NotPanics(t, func() {
 		h.recordRedisError("hybrid_write", errors.New("boom"))
 	})
+}
+
+// A failed sync round must not wipe the remote estimate: batchCurrentStatsErr
+// reports failed keys as zero, and writing them made every instance admit up
+// to the full limit on its own while Redis was failing.
+func TestApplySync_KeepsRemoteEstimateOnRedisError(t *testing.T) {
+	h := &HybridBackend{remoteStats: make(map[string][2]int)}
+	key := "m:grant:claude-opus-4.6"
+	keys := []string{key}
+	t0 := time.Now()
+
+	h.applySync(keys, syncResult{
+		total: map[string][2]int{key: {7, 700}},
+		local: map[string][2]int{key: {2, 200}},
+	}, t0)
+	rpm, tpm := h.remoteFor(key)
+	require.Equal(t, 5, rpm)
+	require.Equal(t, 500, tpm)
+
+	// Redis error: failed keys come back as zero, the estimate must stay.
+	h.applySync(keys, syncResult{
+		total:    map[string][2]int{key: {0, 0}},
+		local:    map[string][2]int{key: {2, 200}},
+		totalErr: errors.New("redis: connection refused"),
+	}, t0.Add(10*time.Second))
+	rpm, _ = h.remoteFor(key)
+	assert.Equal(t, 5, rpm, "a failed sync must keep the last known remote estimate")
+	assert.Equal(t, 2, h.effectiveRPMLimit(key, 7))
+
+	// Still failing after the RPM window: the estimate no longer describes the window.
+	h.applySync(keys, syncResult{totalErr: context.DeadlineExceeded}, t0.Add(rpmWindow+time.Second))
+	rpm, tpm = h.remoteFor(key)
+	assert.Equal(t, 0, rpm)
+	assert.Equal(t, 0, tpm)
+
+	// Redis is back: the estimate is refreshed again.
+	h.applySync(keys, syncResult{
+		total: map[string][2]int{key: {4, 400}},
+		local: map[string][2]int{key: {1, 100}},
+	}, t0.Add(rpmWindow+2*time.Second))
+	rpm, _ = h.remoteFor(key)
+	assert.Equal(t, 3, rpm)
 }

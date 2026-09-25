@@ -52,8 +52,10 @@ type HybridBackend struct {
 
 	// remoteStats holds the estimated traffic from OTHER instances only.
 	// It is periodically refreshed: remote = redis_total - local.
-	remoteMu    sync.RWMutex
-	remoteStats map[string][2]int // key → [rpm, tpm]
+	// remoteSyncedAt is the time of the last successful refresh.
+	remoteMu       sync.RWMutex
+	remoteStats    map[string][2]int // key → [rpm, tpm]
+	remoteSyncedAt time.Time
 
 	writeQueue chan asyncOp
 	stopCh     chan struct{}
@@ -245,18 +247,13 @@ func (h *HybridBackend) doSync() {
 	// recordRedisError itself, so the outer select (the only place that
 	// reports) can't double-count the same underlying failure once for the
 	// goroutine's own error and again for a racing ctx.Done() timeout.
-	type statsResult struct {
-		total    map[string][2]int
-		local    map[string][2]int
-		totalErr error
-	}
-	ch := make(chan statsResult, 1)
+	ch := make(chan syncResult, 1)
 
 	go func() {
 		total, err := h.remote.batchCurrentStatsErr(ctx, keys)
 		local := h.local.batchCurrentStats(ctx, keys)
 		select {
-		case ch <- statsResult{total, local, err}:
+		case ch <- syncResult{total, local, err}:
 		case <-ctx.Done():
 		}
 	}()
@@ -264,27 +261,53 @@ func (h *HybridBackend) doSync() {
 	select {
 	case <-ctx.Done():
 		h.recordRedisError("hybrid_sync", ctx.Err())
-		return
+		h.applySync(keys, syncResult{totalErr: ctx.Err()}, time.Now())
 	case r := <-ch:
 		if r.totalErr != nil {
 			h.recordRedisError("hybrid_sync", r.totalErr)
 		}
-		h.remoteMu.Lock()
-		for _, key := range keys {
-			total := r.total[key]
-			local := r.local[key]
-			remoteRPM := total[0] - local[0]
-			remoteTPM := total[1] - local[1]
-			if remoteRPM < 0 {
-				remoteRPM = 0
-			}
-			if remoteTPM < 0 {
-				remoteTPM = 0
-			}
-			h.remoteStats[key] = [2]int{remoteRPM, remoteTPM}
-		}
-		h.remoteMu.Unlock()
+		h.applySync(keys, r, time.Now())
 	}
+}
+
+// syncResult is one sync round: Redis totals (all instances) and local counts.
+type syncResult struct {
+	total    map[string][2]int
+	local    map[string][2]int
+	totalErr error
+}
+
+// applySync refreshes remoteStats from one sync round. A failed round (Redis
+// error or timeout) keeps the last known estimate: batchCurrentStatsErr reports
+// failed keys as zero, and writing those zeros made every instance treat the
+// other instances as idle and admit up to the full limit on its own. The kept
+// estimate is dropped once it is older than the RPM window — it no longer
+// describes the current window, so local-only counting resumes.
+func (h *HybridBackend) applySync(keys []string, r syncResult, now time.Time) {
+	h.remoteMu.Lock()
+	defer h.remoteMu.Unlock()
+
+	if r.totalErr != nil {
+		if !h.remoteSyncedAt.IsZero() && now.Sub(h.remoteSyncedAt) > rpmWindow {
+			clear(h.remoteStats)
+		}
+		return
+	}
+
+	for _, key := range keys {
+		total := r.total[key]
+		local := r.local[key]
+		remoteRPM := total[0] - local[0]
+		remoteTPM := total[1] - local[1]
+		if remoteRPM < 0 {
+			remoteRPM = 0
+		}
+		if remoteTPM < 0 {
+			remoteTPM = 0
+		}
+		h.remoteStats[key] = [2]int{remoteRPM, remoteTPM}
+	}
+	h.remoteSyncedAt = now
 }
 
 func (h *HybridBackend) remoteFor(key string) (rpm, tpm int) {
