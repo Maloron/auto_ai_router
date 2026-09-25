@@ -150,22 +150,22 @@ func TestInitializeBalancerReturnsHybridBackendForCallerToClose(t *testing.T) {
 }
 
 func TestBalancerRedisBackend(t *testing.T) {
-	shared := ratelimit.NewRedisBackendFromClient(nil, "ru01")
+	own := ratelimit.NewRedisBackendFromClient(nil, "ru01")
 
 	t.Run("default balancer prefix (equal to key prefix) keeps the deployment backend", func(t *testing.T) {
-		got := balancerRedisBackend(config.RedisConfig{KeyPrefix: "ru01", BalancerKeyPrefix: "ru01"}, shared)
-		assert.Same(t, shared, got)
+		got := balancerRedisBackend(config.RedisConfig{KeyPrefix: "ru01", BalancerKeyPrefix: "ru01"}, own)
+		assert.Same(t, own, got)
 	})
 
 	t.Run("empty balancer prefix in a code-built config keeps the deployment backend", func(t *testing.T) {
-		got := balancerRedisBackend(config.RedisConfig{KeyPrefix: "ru01"}, shared)
-		assert.Same(t, shared, got)
+		got := balancerRedisBackend(config.RedisConfig{KeyPrefix: "ru01"}, own)
+		assert.Same(t, own, got)
 	})
 
 	t.Run("balancer prefix namespaces only the limiter backend", func(t *testing.T) {
-		got := balancerRedisBackend(config.RedisConfig{KeyPrefix: "ru01", BalancerKeyPrefix: "air-balancer:"}, shared)
+		got := balancerRedisBackend(config.RedisConfig{KeyPrefix: "ru01", BalancerKeyPrefix: "air-balancer:"}, own)
 		assert.Equal(t, "air-balancer:", got.KeyPrefix())
-		assert.Equal(t, "ru01", shared.KeyPrefix(), "shared backend (budget/auth/response store) must keep its prefix")
+		assert.Equal(t, "ru01", own.KeyPrefix(), "the deployment's own backend (budget/auth/response store) must keep its prefix")
 	})
 }
 

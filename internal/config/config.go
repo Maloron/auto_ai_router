@@ -1784,14 +1784,13 @@ func defaultMonitoringConfig() MonitoringConfig {
 }
 
 func defaultRedisConfig() RedisConfig {
-	return RedisConfig{
+	r := RedisConfig{
 		Enabled:           false,
 		InitAddresses:     nil,
 		Username:          "",
 		Password:          "",
 		SelectDB:          0,
 		KeyPrefix:         "rl:",
-		BalancerKeyPrefix: "rl:",
 		TLSEnabled:        false,
 		ConnectTimeout:    5 * time.Second,
 		ConnWriteTimeout:  10 * time.Second,
@@ -1802,6 +1801,8 @@ func defaultRedisConfig() RedisConfig {
 		KeyTTL:            120,
 		CommandTimeout:    3 * time.Second,
 	}
+	r.BalancerKeyPrefix = r.KeyPrefix
+	return r
 }
 
 func defaultLiteLLMDBConfig() LiteLLMDBConfig {

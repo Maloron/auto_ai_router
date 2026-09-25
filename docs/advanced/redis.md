@@ -181,6 +181,8 @@ Requirements for every deployment that shares the prefix:
 
 When `balancer_key_prefix` differs from `key_prefix`, the counters are treated as shared and are never deleted by the router: when a model disappears from one deployment, its keys are left to expire via `key_ttl`, so usage recorded by the other deployments is kept. While a deployment is being switched to a new `balancer_key_prefix`, old and new pods count separately until the rollout finishes.
 
+With a shared prefix, the credential/model RPM/TPM gauges (`auto_ai_router_credential_rpm_current`, `auto_ai_router_model_rpm_current`, …) and `/health` report the joint usage of all deployments sharing it, not the usage of the deployment that exports them. Do not sum these gauges across deployments.
+
 Changing `key_prefix` itself is not a substitute: it would also merge budget reservations, key-level limits and stored responses.
 
 ## How Rate Limiting Works in Redis
