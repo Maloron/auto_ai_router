@@ -752,7 +752,19 @@ func (r *RoundRobin) NextRetryForModelExcludingScoped(modelID string, current *c
 		if r.hasTriedPriorityCredential(attempted) {
 			return r.nextUnprioritizedRetry(modelID, exclude, visibility)
 		}
-		return r.NextSameTypeForModelExcludingScoped(modelID, current.Type, exclude, visibility)
+		cred, err := r.NextSameTypeForModelExcludingScoped(modelID, current.Type, exclude, visibility)
+		if err == nil {
+			return cred, nil
+		}
+		// No other credential of this exact type serves the model at all (not merely
+		// banned or rate-limited, which stays ErrRateLimitExceeded and is left alone —
+		// same-type may recover on its own). A same-type-only credential can never find
+		// a sibling here no matter how many times this fires, so fall through to the
+		// unrestricted pool instead of dead-ending every retry on it.
+		if errors.Is(err, ErrNoCredentialsAvailable) {
+			return r.nextUnprioritizedRetry(modelID, exclude, visibility)
+		}
+		return nil, err
 	}
 	return r.nextPriorityRetry(modelID, current.EffectivePriority(), exclude, visibility)
 }

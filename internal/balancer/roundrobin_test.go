@@ -1108,6 +1108,52 @@ func TestNextRetryForModelExcluding_DefaultsToSameType(t *testing.T) {
 	assert.Equal(t, "openai-b", cred.Name)
 }
 
+// A credential with no priority and no same-type sibling for the model used to dead-end
+// every retry in NextSameTypeForModelExcluding (ErrNoCredentialsAvailable) even though an
+// unprioritized credential of a different type was available the whole time. Same-type is
+// still tried first (see TestNextRetryForModelExcluding_DefaultsToSameType); this only
+// covers the case where that search comes back completely empty.
+func TestNextRetryForModelExcluding_SameTypeDeadEndEscalatesToAnyType(t *testing.T) {
+	f2b := fail2ban.New(3, 0, []int{401, 403, 500})
+	rl := ratelimit.New()
+
+	credentials := []config.CredentialConfig{
+		{Name: "cheapgpt-gemini", Type: config.ProviderTypeOpenAI, APIKey: "key1", BaseURL: "http://cheapgpt.com", RPM: 100},
+		{Name: "agile-planet", Type: config.ProviderTypeVertexAI, APIKey: "key2", BaseURL: "http://vertex.com", RPM: 100},
+	}
+
+	bal := New(credentials, f2b, rl)
+
+	tried := map[string]bool{"cheapgpt-gemini": true}
+	cred, err := bal.NextRetryForModelExcluding("", &credentials[0], tried, tried)
+	require.NoError(t, err)
+	assert.Equal(t, "agile-planet", cred.Name)
+}
+
+// A rate-limited same-type sibling must surface ErrRateLimitExceeded, not escalate to a
+// different-type credential — same-type may recover on its own (quota resets), so widening
+// the search on every transient 429 would bypass that recovery instead of waiting for it.
+func TestNextRetryForModelExcluding_RateLimitedSameTypeDoesNotEscalate(t *testing.T) {
+	f2b := fail2ban.New(3, 0, []int{401, 403, 500})
+	rl := ratelimit.New()
+
+	credentials := []config.CredentialConfig{
+		{Name: "openai-a", Type: config.ProviderTypeOpenAI, APIKey: "key1", BaseURL: "http://a.com", RPM: 100},
+		{Name: "openai-b", Type: config.ProviderTypeOpenAI, APIKey: "key2", BaseURL: "http://b.com", RPM: 1},
+		{Name: "anthropic-a", Type: config.ProviderTypeAnthropic, APIKey: "key3", BaseURL: "http://c.com", RPM: 100},
+	}
+
+	bal := New(credentials, f2b, rl)
+
+	// Exhaust openai-b's single RPM unit so it's live but out of budget, not absent.
+	_, err := bal.NextSameTypeForModelExcluding("", config.ProviderTypeOpenAI, map[string]bool{"openai-a": true})
+	require.NoError(t, err)
+
+	tried := map[string]bool{"openai-a": true}
+	_, err = bal.NextRetryForModelExcluding("", &credentials[0], tried, tried)
+	assert.ErrorIs(t, err, ErrRateLimitExceeded)
+}
+
 func TestNextRetryForModelExcluding_FallbackPrioritySkipsFallbackCredentials(t *testing.T) {
 	f2b := fail2ban.New(3, 0, []int{401, 403, 500})
 	rl := ratelimit.New()
