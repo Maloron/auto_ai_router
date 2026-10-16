@@ -57,6 +57,9 @@ type spendRoute struct {
 // so the bare fragment must stay last.
 var spendRoutes = []spendRoute{
 	{"acompletion", "/chat/completions", "/chat/completions"},
+	// LiteLLM calls its native Anthropic route anthropic_messages. Keep a
+	// versionless endpoint dimension, as for the other daily spend routes.
+	{"anthropic_messages", "/messages", "/messages"},
 	{"aembedding", "/embeddings", "/embeddings"},
 	{"aresponses", "/responses", "/responses"},
 	{"aimage_generation", "/images/generations", "/image/generations"},
@@ -188,6 +191,14 @@ func buildSpendLogRecords(
 			}
 		} else {
 			record.Endpoint = dailyEndpoint(rawCallType)
+		}
+
+		if record.SkipDaily && record.Spend != 0 {
+			// Keep the raw row and counters recoverable, but make missing paid
+			// projections visible even with production's error-only logging.
+			logger.Error("[DB] "+scope+": paid spend skipped daily aggregation",
+				"call_type", effectiveCallType, "request_id", record.RequestID,
+				"model", record.Model, "spend", record.Spend)
 		}
 
 		records = append(records, record)
