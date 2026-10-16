@@ -31,7 +31,7 @@ func TestMessagesSpendReachesAllDailyProjections(t *testing.T) {
 			require.NoError(t, err)
 			require.Len(t, records, 1)
 			assert.False(t, records[0].SkipDaily)
-			assert.Equal(t, "/messages", records[0].Endpoint)
+			assert.Empty(t, records[0].Endpoint, "LiteLLM has no ROUTE_ENDPOINT_MAPPING entry for anthropic_messages, so its own daily endpoint dimension is NULL")
 			assert.Equal(t, entry.Spend, records[0].Spend)
 			assert.Equal(t, entry.Model, records[0].Model)
 			assert.Equal(t, "anthropic", records[0].CustomLLMProvider)

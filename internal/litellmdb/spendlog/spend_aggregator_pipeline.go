@@ -57,9 +57,12 @@ type spendRoute struct {
 // so the bare fragment must stay last.
 var spendRoutes = []spendRoute{
 	{"acompletion", "/chat/completions", "/chat/completions"},
-	// LiteLLM calls its native Anthropic route anthropic_messages. Keep a
-	// versionless endpoint dimension, as for the other daily spend routes.
-	{"anthropic_messages", "/messages", "/messages"},
+	// LiteLLM calls its native Anthropic route anthropic_messages, but (as of
+	// litellm route_llm_request.ROUTE_ENDPOINT_MAPPING) does not list it there
+	// at all, so its own daily aggregation leaves the endpoint dimension NULL
+	// for this call_type. Mirror that exactly with "" rather than inventing an
+	// endpoint value LiteLLM itself never writes.
+	{"anthropic_messages", "/messages", ""},
 	{"aembedding", "/embeddings", "/embeddings"},
 	{"aresponses", "/responses", "/responses"},
 	{"aimage_generation", "/images/generations", "/image/generations"},
