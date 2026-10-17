@@ -111,6 +111,10 @@ func MessagesToChat(body []byte) ([]byte, MessagesAdapterMetadata, error) {
 	}
 	outputConfig, _ := request["output_config"].(map[string]interface{})
 	configuredEffort, _ := outputConfig["effort"].(string)
+	tc, _ := mapThinkingConfig(request["thinking"], "", model)
+	if err := validateBetweenTools(tc, configuredEffort); err != nil {
+		return nil, MessagesAdapterMetadata{}, err
+	}
 	thinking, hasThinking := request["thinking"].(map[string]interface{})
 	if !hasThinking && configuredEffort != "" && isClaudeModel(model) && thinksByDefault(model) {
 		// Omitting thinking runs adaptive on this model: say so, so the effort can go along.

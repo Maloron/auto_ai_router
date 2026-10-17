@@ -800,6 +800,26 @@ func TestNormalizeMessagesForPassthrough_InvalidThinkingOffRejected(t *testing.T
 	}
 }
 
+// The round trip rejects the same: the Chat form drops the effort beside thinking off, so
+// OpenAIToAnthropic can't see it, and an OpenAI-compatible provider is never converted.
+func TestMessagesToChat_InvalidThinkingOffRejected(t *testing.T) {
+	for _, tt := range []struct{ fields, param string }{
+		{`,"thinking":{"type":"between_tools"},"output_config":{"effort":"xhigh"}`, "output_config.effort"},
+		{`,"thinking":{"type":"disabled"},"output_config":{"effort":"max"}`, "output_config.effort"},
+		{`,"thinking":{"type":"between_tools","display":"summarized"}`, "thinking"},
+		{`,"thinking":{"type":"between_tools","block_binding":{"prefix_mismatch_behavior":"error"}}`, "thinking"},
+	} {
+		body := `{"model":"claude-sonnet-5-5","max_tokens":100,"messages":[{"role":"user","content":"hi"}]` + tt.fields + `}`
+		_, _, err := MessagesToChat([]byte(body))
+		testhelpers.RequireValidationError(t, err, tt.param, "")
+	}
+
+	// Other models have no between_tools rules.
+	body := `{"model":"claude-opus-5","max_tokens":100,"messages":[{"role":"user","content":"hi"}],"thinking":{"type":"disabled"},"output_config":{"effort":"max"}}`
+	_, _, err := MessagesToChat([]byte(body))
+	require.NoError(t, err)
+}
+
 // The Messages API effort reaches Anthropic through the Chat adapter (Bedrock) next to a
 // thinking config that thinks, over a budget-derived effort, and with thinking omitted on
 // a model that thinks by default. It never travels as reasoning_effort beside disabled
