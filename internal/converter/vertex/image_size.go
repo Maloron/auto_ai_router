@@ -151,17 +151,22 @@ func mapGeminiImageSize(model, size string) (*geminiImageConfig, error) {
 	return &geminiImageConfig{aspectRatio: ratio.value, imageSize: resolution.value}, nil
 }
 
+// dimensions is the image size the model returns for ratio at resolution: the 1K
+// size scaled, unless the grid lists another one (3.1 Flash 21:9 at 512 is 792x168).
+func (ratio geminiImageRatio) dimensions(resolution geminiImageResolution) geminiImageDimensions {
+	if override, ok := ratio.resolutionOverrides[resolution.value]; ok {
+		return override
+	}
+	return geminiImageDimensions{
+		width:  int(math.Round(float64(ratio.resolution1KWidth) * resolution.scale)),
+		height: int(math.Round(float64(ratio.resolution1KHeight) * resolution.scale)),
+	}
+}
+
 func exactGeminiImageConfig(profile geminiImageProfile, width, height int) (*geminiImageConfig, bool) {
 	for _, ratio := range profile.ratios {
 		for _, resolution := range profile.resolutions {
-			dimensions := geminiImageDimensions{
-				width:  int(math.Round(float64(ratio.resolution1KWidth) * resolution.scale)),
-				height: int(math.Round(float64(ratio.resolution1KHeight) * resolution.scale)),
-			}
-			if override, ok := ratio.resolutionOverrides[resolution.value]; ok {
-				dimensions = override
-			}
-			if dimensions.width == width && dimensions.height == height {
+			if dimensions := ratio.dimensions(resolution); dimensions.width == width && dimensions.height == height {
 				return &geminiImageConfig{
 					aspectRatio: ratio.value,
 					imageSize:   resolution.value,
@@ -218,10 +223,9 @@ func nearestGeminiImageResolution(
 	nearest := resolutions[0]
 	nearestDistance := math.Inf(1)
 	for _, resolution := range resolutions {
-		candidateWidth := float64(ratio.resolution1KWidth) * resolution.scale
-		candidateHeight := float64(ratio.resolution1KHeight) * resolution.scale
-		widthDistance := math.Log(float64(width) / candidateWidth)
-		heightDistance := math.Log(float64(height) / candidateHeight)
+		candidate := ratio.dimensions(resolution)
+		widthDistance := math.Log(float64(width) / float64(candidate.width))
+		heightDistance := math.Log(float64(height) / float64(candidate.height))
 		distance := widthDistance*widthDistance + heightDistance*heightDistance
 		if distance < nearestDistance {
 			nearest = resolution

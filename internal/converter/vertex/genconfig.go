@@ -9,7 +9,9 @@ import (
 )
 
 // buildGenerationConfig constructs Vertex GenerationConfig from OpenAI request params.
-// Returns nil if no config parameters are set.
+// Returns nil if no config parameters are set, except for a model whose profile pins
+// its thinking levels: it always takes its default level, as on the images and
+// Responses routes.
 func buildGenerationConfig(req *openai.OpenAIRequest, model string) *VertexGenerationConfig {
 	// Check if any config params are present
 	hasParams := req.Temperature != nil || req.MaxTokens != nil || req.MaxCompletionTokens != nil ||
@@ -21,7 +23,7 @@ func buildGenerationConfig(req *openai.OpenAIRequest, model string) *VertexGener
 		req.ThinkingConfig != nil || req.ThinkingConfigCamel != nil ||
 		hasTopLevelImageConfig(req)
 
-	if !hasParams {
+	if !hasParams && !lookupGeminiModelProfile(model).hasThinkingLevels() {
 		return nil
 	}
 

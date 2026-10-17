@@ -187,9 +187,19 @@ func TestNanoBanana21Thinking(t *testing.T) {
 		})
 	}
 
-	t.Run("no generation params leaves the provider default", func(t *testing.T) {
+	// A bare chat request takes the default level too, as the images and Responses
+	// routes always do; a model without a profile still sends no generationConfig.
+	t.Run("no generation params still sends the default level", func(t *testing.T) {
 		req := nanoChat(t, `"stream":false`)
-		assert.NotContains(t, req, "generationConfig")
+		assert.Equal(t, map[string]interface{}{
+			"thinkingConfig": map[string]interface{}{"thinkingLevel": string(genai.ThinkingLevelMedium)},
+		}, generationConfigOf(t, req))
+	})
+	t.Run("no generation params on a model without a profile", func(t *testing.T) {
+		body := `{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"Hi"}]}`
+		out, err := OpenAIToVertex([]byte(body), false, false, "gemini-2.5-flash", "application/json")
+		require.NoError(t, err)
+		assert.NotContains(t, decodeVertexRequest(t, out), "generationConfig")
 	})
 }
 
