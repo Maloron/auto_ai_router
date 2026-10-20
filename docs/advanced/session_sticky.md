@@ -316,21 +316,21 @@ r2 = client.responses.create(
 
 ## Edge Cases
 
-| Scenario                             | Behaviour                                                                               |
-| ------------------------------------ | --------------------------------------------------------------------------------------- |
-| `session_sticky_enabled: false`      | Plain round-robin, no binding stored                                                    |
-| No `user` / `session_id` in request  | No binding attempted, plain round-robin                                                 |
-| First request for a session          | Round-robin selects credential; binding written only on success                         |
-| Bound credential is banned           | Fallback to the cascade; binding moves to the credential that served             |
-| Bound credential is busy (RPM/TPM)   | Fallback to the cascade; binding kept, next turn returns to it                   |
-| Bound credential removed from config | `NextSpecific` returns not-found; fallback to round-robin                               |
-| Request fails (5xx)                  | Binding is cleared by `defer` in `ProxyRequest`                                         |
-| Client disconnects (499)             | Binding kept                                                                            |
-| Streaming failure mid-stream         | `streamCompleted = false` → binding cleared                                             |
+| Scenario                             | Behaviour                                                                             |
+| ------------------------------------ | ------------------------------------------------------------------------------------- |
+| `session_sticky_enabled: false`      | Plain round-robin, no binding stored                                                  |
+| No `user` / `session_id` in request  | No binding attempted, plain round-robin                                               |
+| First request for a session          | Round-robin selects credential; binding written only on success                       |
+| Bound credential is banned           | Fallback to the cascade; binding moves to the credential that served                  |
+| Bound credential is busy (RPM/TPM)   | Fallback to the cascade; binding kept, next turn returns to it                        |
+| Bound credential removed from config | `NextSpecific` returns not-found; fallback to round-robin                             |
+| Request fails (5xx)                  | Binding is cleared by `defer` in `ProxyRequest`                                       |
+| Client disconnects (499)             | Binding kept                                                                          |
+| Streaming failure mid-stream         | `streamCompleted = false` → binding cleared                                           |
 | Same-type retry succeeds on cred B   | Binding moves to B if B is in the model's best tier, else the session is left unbound |
-| Fallback proxy succeeds              | Same as retry                                                                    |
-| TTL expired between turns            | Binding treated as absent; next round-robin result starts a new binding                 |
-| One `sessionID`, multiple models     | Independent bindings per `{sessionID, modelID}` pair                                    |
+| Fallback proxy succeeds              | Same as retry                                                                         |
+| TTL expired between turns            | Binding treated as absent; next round-robin result starts a new binding               |
+| One `sessionID`, multiple models     | Independent bindings per `{sessionID, modelID}` pair                                  |
 
 ## Performance Notes
 
