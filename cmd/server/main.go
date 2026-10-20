@@ -45,6 +45,7 @@ import (
 	_ "github.com/mixaill76/auto_ai_router/internal/converter/vertex/responses"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/valkey-io/valkey-go"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/propagation"
 )
@@ -211,6 +212,12 @@ func main() {
 		log.Info("LiteLLM DB initial health check passed (marked healthy)")
 	}
 
+	// Session-sticky bindings are shared between replicas through the same Redis.
+	var sessionStoreRedis valkey.Client
+	if redisBackend != nil {
+		sessionStoreRedis = redisBackend.Client()
+	}
+
 	// ==================== Create Response Store ====================
 	var respStore responsestore.Store
 	if redisBackend != nil {
@@ -270,6 +277,8 @@ func main() {
 		SessionStickyEnabled:         cfg.Server.SessionStickyEnabled,
 		SessionStickyAutoCacheCtrl:   cfg.Server.SessionStickyAutoCacheCtrl,
 		SessionStoreTTL:              time.Duration(cfg.Server.SessionStickyTTL) * time.Minute,
+		SessionStoreRedis:            sessionStoreRedis,
+		SessionStoreKeyPrefix:        cfg.Redis.KeyPrefix,
 		DrainUpstreamOnAbort:         cfg.Server.DrainUpstreamOnAbort,
 		ResponseCompatibility:        cfg.Server.ResponseCompatibility,
 		TiktokenEnabled:              cfg.Server.TiktokenEnabled,

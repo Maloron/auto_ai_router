@@ -1156,6 +1156,7 @@ func (p *Proxy) selectCredentialForModel(
 		if credName, ok := p.sessionStore.Get(sessionID, modelID); ok && !exclude[credName] {
 			cred, err := p.balancer.NextSpecificScoped(credName, modelID, logCtx.Scope)
 			if err == nil {
+				logCtx.StickyBoundCredential = credName
 				p.logger.DebugContext(logCtx.Context(), "Session-sticky routing: using cached credential",
 					"session_id", sessionID,
 					"credential", cred.Name,
@@ -1164,8 +1165,14 @@ func (p *Proxy) selectCredentialForModel(
 				return cred, true
 			}
 
+			if p.credentialServesModel(credName, modelID) {
+				// Temporarily unavailable (rate limit, short ban): serve this turn
+				// elsewhere but keep the binding for the next one.
+				logCtx.StickyHeldCredential = credName
+			}
 			p.logger.DebugContext(logCtx.Context(), "Session-sticky routing: cached credential unavailable, falling back to standard selection",
 				"session_id", sessionID,
+				"binding_kept", logCtx.StickyHeldCredential != "",
 				"credential", credName,
 				"model", modelID,
 				"error", err,

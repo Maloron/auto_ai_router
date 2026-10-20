@@ -27,7 +27,7 @@ Sticky routing also helps providers that require continuity for features like:
 sequenceDiagram
     participant Client
     participant Proxy as Auto AI Router
-    participant Store as SessionStore<br/>(in-memory)
+    participant Store as SessionStore<br/>(Redis, or in-memory without Redis)
     participant Bal as Balancer
     participant Cred as credential
 
@@ -127,14 +127,20 @@ stateDiagram-v2
 
     Success --> [*]: setSessionBinding(sessionID, modelID, cred)\nRequestCompleted = true
 
-    Failure --> [*]: clearSessionBinding(sessionID, modelID)\nRequestCompleted = false (default)
+    Failure --> [*]: clearSessionBinding(sessionID, modelID)\nunless the client disconnected\nor the bound credential was only held
 ```
 
 Key consequences:
 
 - A binding points to a credential that **successfully completed at least one request** and is therefore likely to have a warm cache.
-- If a credential gets banned or rate-limited between turns, the sticky lookup fails gracefully and the proxy falls back to normal selection — no request is dropped.
-- On same-type retry or fallback proxy success, the binding is updated to the **winning** credential, not the original one.
+- If the bound credential is banned or rate-limited at the moment, the sticky lookup fails gracefully and the proxy falls back to normal selection — no request is dropped — **and the binding is kept**: the next turn goes back to the bound credential and its warm cache.
+- If the bound credential fails and a retry or fallback succeeds on another credential, the binding also stays on the bound credential. It moves only when the bound credential no longer serves the model (removed from config) or when there was no binding yet.
+- A client disconnect (499) does not clear the binding: it says nothing about the credential.
+- A binding is refreshed only when its credential serves a turn, so a binding whose credential stays unavailable expires one TTL later and the session re-binds.
+
+### Multiple replicas
+
+With `redis.enabled`, bindings are stored in Redis/Valkey under `{redis.key_prefix}session:{sha256(model, session)}` with a native TTL, so every replica of a deployment sees the same binding. Without Redis each replica keeps its own in-memory bindings, and with N replicas behind a load balancer a follow-up turn reaches the replica that holds the binding only about 1/N of the time. Every write is mirrored into a local in-memory copy that is used when Redis is unreachable (each Redis command is bounded by 200 ms).
 
 ## Sources of Session ID
 
@@ -190,7 +196,7 @@ When disabled, no `SessionStore` is created and all routing uses plain round-rob
 
 ### TTL
 
-The binding expires after the configured TTL of inactivity. Every successful lookup for the same session and model refreshes the TTL immediately, so an active conversation keeps its credential affinity even while a response is still in progress. After expiry, the next request starts a new binding via round-robin.
+The binding expires after the configured TTL of inactivity. Every turn served by the bound credential refreshes the TTL, so an active conversation keeps its credential affinity. Lookups alone do not extend it. After expiry, the next request starts a new binding via round-robin.
 
 ```yaml
 server:
@@ -313,19 +319,20 @@ r2 = client.responses.create(
 | `session_sticky_enabled: false`      | Plain round-robin, no binding stored                                                    |
 | No `user` / `session_id` in request  | No binding attempted, plain round-robin                                                 |
 | First request for a session          | Round-robin selects credential; binding written only on success                         |
-| Bound credential is banned           | Graceful fallback to round-robin; binding is NOT cleared (still valid for other models) |
+| Bound credential is banned           | Graceful fallback to round-robin; binding kept, next turn returns to it                 |
 | Bound credential is rate-limited     | Same as banned — fallback, binding kept                                                 |
 | Bound credential removed from config | `NextSpecific` returns not-found; fallback to round-robin                               |
-| Request fails (5xx / disconnect)     | Binding is cleared by `defer` in `ProxyRequest`                                         |
+| Request fails (5xx)                  | Binding is cleared by `defer` in `ProxyRequest`                                         |
+| Client disconnects (499)             | Binding kept                                                                            |
 | Streaming failure mid-stream         | `streamCompleted = false` → binding cleared                                             |
-| Same-type retry succeeds on cred B   | Binding updated to cred B                                                               |
-| Fallback proxy succeeds              | Binding updated to fallback credential                                                  |
+| Same-type retry succeeds on cred B   | Binding stays on the bound credential (set to B only if there was none)                 |
+| Fallback proxy succeeds              | Same as retry                                                                           |
 | TTL expired between turns            | Binding treated as absent; next round-robin result starts a new binding                 |
 | One `sessionID`, multiple models     | Independent bindings per `{sessionID, modelID}` pair                                    |
 
 ## Performance Notes
 
-- `SessionStore` is an in-memory `sync.RWMutex`-protected map — lookup is O(1) and sub-microsecond.
+- With Redis, a lookup is one `GET` bounded by 200 ms that falls back to the local copy on error; without Redis, `SessionStore` is an in-memory mutex-protected map — lookup is O(1) and sub-microsecond.
 - `NextSpecific` acquires a **read lock** on the balancer — it does not block concurrent round-robin selections.
 - The background cleanup goroutine runs every 2 minutes and removes expired entries.
 - At very high session counts (millions of concurrent sessions) consider using a Redis-backed store for the `ResponseStore` and monitoring memory usage of `SessionStore`.

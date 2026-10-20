@@ -41,6 +41,7 @@ import (
 	"github.com/mixaill76/auto_ai_router/internal/scope"
 	"github.com/mixaill76/auto_ai_router/internal/security"
 	"github.com/mixaill76/auto_ai_router/internal/utils"
+	"github.com/valkey-io/valkey-go"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -285,6 +286,8 @@ type RequestLogContext struct {
 	StreamOutcome         string                   // completed, client_aborted, or stream_error
 	Credential            *config.CredentialConfig // Credential used
 	SessionID             string                   // Session ID
+	StickyBoundCredential string                   // Credential the session binding routed this request to
+	StickyHeldCredential  string                   // Credential the session is bound to but was unavailable for this request (binding kept)
 	TargetURL             string                   // Target URL (for APIBase extraction)
 	TokenInfo             *litellmdb.TokenInfo     // User/team/org info
 	IsImageGeneration     bool                     // True if this is an image generation request
@@ -411,8 +414,10 @@ type Config struct {
 	SessionStickyEnabled         bool
 	SessionStickyAutoCacheCtrl   bool // Auto-inject Anthropic cache_control markers when session is active (default: true)
 	SessionStoreTTL              time.Duration
-	RouterID                     string // Human-readable name for this router (shown in /trace); defaults to hostname
-	DrainUpstreamOnAbort         bool   // When true, keep reading upstream after client disconnect to get real usage (default: false)
+	SessionStoreRedis            valkey.Client // Optional: share session bindings between replicas (nil = replica-local)
+	SessionStoreKeyPrefix        string        // Redis key prefix for session bindings (the deployment's redis.key_prefix)
+	RouterID                     string        // Human-readable name for this router (shown in /trace); defaults to hostname
+	DrainUpstreamOnAbort         bool          // When true, keep reading upstream after client disconnect to get real usage (default: false)
 	ResponseCompatibility        string
 	TiktokenEnabled              bool // Local tiktoken-based prompt/completion token fallback estimation (default: true)
 	StrictAllTeamModelsACL       bool
@@ -456,7 +461,7 @@ type Proxy struct {
 	retryPolicy                      *retryPolicy        // compiled Config.Retry
 	maxFallbackAttempts              int                 // Max fallback proxy hops per request chain
 	responseStore                    responsestore.Store // Optional: Responses API store (bbolt or Redis)
-	sessionStore                     *SessionStore       // Optional: session-sticky credential routing
+	sessionStore                     sessionBindingStore // Optional: session-sticky credential routing
 	stickyAutoCacheCtrl              bool                // Auto-inject Anthropic cache_control when session is active
 	drainUpstreamOnAbort             bool                // Keep reading upstream after client disconnect to get real usage chunk
 	tiktokenEnabled                  bool                // Local tiktoken-based prompt/completion token fallback estimation
@@ -509,13 +514,17 @@ func New(cfg *Config) *Proxy {
 		}
 	}
 
-	var sessionStore *SessionStore
+	var sessionStore sessionBindingStore
 	if cfg.SessionStickyEnabled {
 		ttl := cfg.SessionStoreTTL
 		if ttl == 0 {
 			ttl = 6 * time.Minute
 		}
-		sessionStore = NewSessionStore(ttl)
+		if cfg.SessionStoreRedis != nil {
+			sessionStore = newRedisSessionStore(cfg.SessionStoreRedis, cfg.SessionStoreKeyPrefix, ttl, cfg.Logger)
+		} else {
+			sessionStore = NewSessionStore(ttl)
+		}
 	}
 
 	var responseCompat *compatlitellm.Transformer
@@ -590,6 +599,55 @@ func (p *Proxy) clearSessionBinding(sessionID, modelID string) {
 		return
 	}
 	p.sessionStore.Delete(sessionID, modelID)
+}
+
+// bindSessionAfterSuccess records which credential served a completed turn,
+// unless that would move the session away from a credential it is still bound
+// to. A bound credential that was skipped because it was momentarily
+// unavailable (rate limit, short ban), or that failed over to another one,
+// keeps the binding: the next turn goes back to it and to its warm prompt
+// cache. Such a binding is not refreshed, so it expires one TTL after the
+// bound credential last served the session.
+func (p *Proxy) bindSessionAfterSuccess(logCtx *RequestLogContext, modelID, credentialName string) {
+	if logCtx == nil {
+		return
+	}
+	if held := logCtx.StickyHeldCredential; held != "" && held != credentialName {
+		return
+	}
+	if bound := logCtx.StickyBoundCredential; bound != "" && bound != credentialName && p.credentialServesModel(bound, modelID) {
+		return
+	}
+	p.setSessionBinding(logCtx.SessionID, modelID, credentialName)
+}
+
+// credentialServesModel reports whether credentialName is still configured for
+// modelID. Unknown means "no": a binding that cannot be confirmed may move.
+func (p *Proxy) credentialServesModel(credentialName, modelID string) bool {
+	if p.modelManager == nil || !p.modelManager.IsEnabled() {
+		return false
+	}
+	for _, name := range p.modelManager.GetCredentialsForModel(modelID) {
+		if name == credentialName {
+			return true
+		}
+	}
+	return false
+}
+
+// shouldClearSessionBindingOnFailure decides whether an incomplete request may
+// drop the session binding. A client that hung up (499) says nothing about the
+// bound credential, and a binding held while its credential was temporarily
+// unavailable must survive the failure of the substitute.
+func shouldClearSessionBindingOnFailure(ctx context.Context, logCtx *RequestLogContext) bool {
+	if logCtx.StickyHeldCredential != "" {
+		return false
+	}
+	if logCtx.HTTPStatus == StatusClientClosedRequest || logCtx.ErrorOrigin == ErrorOriginClientCanceled ||
+		logCtx.StreamOutcome == "client_aborted" {
+		return false
+	}
+	return ctx == nil || ctx.Err() == nil
 }
 
 // GetMasterKey returns the proxy master key.
@@ -988,7 +1046,7 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request) {
 		// logSpendToLiteLLMDB (e.g. an early failure before a credential was set).
 		// The guard makes this a no-op when reconciliation already happened.
 		p.reconcileBudgetAndRateLimits(logCtx, 0)
-		if !logCtx.RequestCompleted {
+		if !logCtx.RequestCompleted && shouldClearSessionBindingOnFailure(r.Context(), logCtx) {
 			p.clearSessionBinding(logCtx.SessionID, logCtx.ModelID)
 		}
 	}()
@@ -1399,7 +1457,7 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request) {
 			}
 			if streamCompleted {
 				logCtx.RequestCompleted = true
-				p.setSessionBinding(logCtx.SessionID, modelID, cred.Name)
+				p.bindSessionAfterSuccess(logCtx, modelID, cred.Name)
 			}
 		} else {
 			// Save passthrough Responses API response or convert Chat Completions response if needed
@@ -1482,7 +1540,7 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request) {
 			}
 			if proxyResp.StatusCode >= 200 && proxyResp.StatusCode < 300 {
 				logCtx.RequestCompleted = true
-				p.setSessionBinding(logCtx.SessionID, modelID, cred.Name)
+				p.bindSessionAfterSuccess(logCtx, modelID, cred.Name)
 			}
 		}
 
@@ -2793,7 +2851,7 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request) {
 		}
 		if streamCompleted {
 			logCtx.RequestCompleted = true
-			p.setSessionBinding(logCtx.SessionID, modelID, cred.Name)
+			p.bindSessionAfterSuccess(logCtx, modelID, cred.Name)
 		}
 
 	} else {
@@ -2831,7 +2889,7 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request) {
 			}
 		} else if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			logCtx.RequestCompleted = true
-			p.setSessionBinding(logCtx.SessionID, modelID, cred.Name)
+			p.bindSessionAfterSuccess(logCtx, modelID, cred.Name)
 		}
 	}
 }
