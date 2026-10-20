@@ -37,9 +37,9 @@ type SessionEntry struct {
 
 // SessionStore is the process-local binding store.
 //
-// The TTL is refreshed by Set only, i.e. when the bound credential actually
-// served a turn. Get does not extend it: a binding whose credential keeps
-// being unavailable expires after one TTL instead of living forever.
+// The TTL is refreshed by Set only, i.e. when a credential served a turn of the
+// session. Get does not extend it, so a binding whose credential is only being
+// waited for (rate limited) expires one TTL after it last served.
 type SessionStore struct {
 	mu      sync.Mutex
 	entries map[sessionKey]*SessionEntry
@@ -121,30 +121,70 @@ func (s *SessionStore) cleanupExpiredLocked(now time.Time) {
 	}
 }
 
-// redisSessionCommandTimeout bounds every binding lookup/update so a slow Redis
-// costs at most this much on the request path; on timeout or error the store
-// falls back to the replica-local copy.
-const redisSessionCommandTimeout = 200 * time.Millisecond
+const (
+	// redisSessionCommandTimeout bounds one binding command on the request path.
+	redisSessionCommandTimeout = 200 * time.Millisecond
+	// redisSessionRetryAfter is how long the store stays on the replica-local copy
+	// after a Redis error, so an outage costs one timeout per window, not one per request.
+	redisSessionRetryAfter = 5 * time.Second
+)
+
+// sessionKV is the part of Redis the binding store needs; valkeySessionKV is the
+// production implementation, tests substitute a fake.
+type sessionKV interface {
+	Get(ctx context.Context, key string) (value string, found bool, err error)
+	Set(ctx context.Context, key, value string, ttl time.Duration) error
+	Del(ctx context.Context, key string) error
+}
+
+type valkeySessionKV struct{ client valkey.Client }
+
+func (kv valkeySessionKV) Get(ctx context.Context, key string) (string, bool, error) {
+	value, err := kv.client.Do(ctx, kv.client.B().Get().Key(key).Build()).ToString()
+	if err != nil {
+		if valkey.IsValkeyNil(err) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	return value, value != "", nil
+}
+
+func (kv valkeySessionKV) Set(ctx context.Context, key, value string, ttl time.Duration) error {
+	return kv.client.Do(ctx, kv.client.B().Set().Key(key).Value(value).Px(ttl).Build()).Error()
+}
+
+func (kv valkeySessionKV) Del(ctx context.Context, key string) error {
+	return kv.client.Do(ctx, kv.client.B().Del().Key(key).Build()).Error()
+}
 
 // redisSessionStore shares bindings through Redis/Valkey (keys
-// "{prefix}session:{sha256(model, session)}", native EX TTL) and mirrors every
-// write into a local SessionStore used when Redis is unreachable.
+// "{prefix}session:{sha256(model, session)}", native PX TTL) and mirrors every
+// write into a local SessionStore. After a Redis error it serves from the local
+// copy for redisSessionRetryAfter before trying Redis again.
 type redisSessionStore struct {
-	client    valkey.Client
+	kv        sessionKV
 	keyPrefix string
 	ttl       time.Duration
 	local     *SessionStore
 	logger    *slog.Logger
-	warned    atomic.Bool
+	now       func() time.Time
+	retryAt   atomic.Int64 // unix nanos; Redis is skipped until then
+	degraded  atomic.Bool  // true between the first error and the next success
 }
 
 func newRedisSessionStore(client valkey.Client, keyPrefix string, ttl time.Duration, logger *slog.Logger) *redisSessionStore {
+	return newRedisSessionStoreWithKV(valkeySessionKV{client: client}, keyPrefix, ttl, logger)
+}
+
+func newRedisSessionStoreWithKV(kv sessionKV, keyPrefix string, ttl time.Duration, logger *slog.Logger) *redisSessionStore {
 	return &redisSessionStore{
-		client:    client,
+		kv:        kv,
 		keyPrefix: keyPrefix,
 		ttl:       ttl,
 		local:     NewSessionStore(ttl),
 		logger:    logger,
+		now:       time.Now,
 	}
 }
 
@@ -155,48 +195,69 @@ func (s *redisSessionStore) key(sessionID, modelID string) string {
 	return s.keyPrefix + "session:" + hex.EncodeToString(sum[:16])
 }
 
-func (s *redisSessionStore) warn(op string, err error) {
-	if s.logger != nil && s.warned.CompareAndSwap(false, true) {
+func (s *redisSessionStore) redisAvailable() bool {
+	return s.now().UnixNano() >= s.retryAt.Load()
+}
+
+func (s *redisSessionStore) fail(op string, err error) {
+	s.retryAt.Store(s.now().Add(redisSessionRetryAfter).UnixNano())
+	if s.degraded.CompareAndSwap(false, true) && s.logger != nil {
 		s.logger.Warn("Session-sticky routing: Redis unavailable, using replica-local bindings",
-			"operation", op, "error", err)
+			"operation", op, "error", err, "retry_after", redisSessionRetryAfter)
+	}
+}
+
+func (s *redisSessionStore) succeed() {
+	if s.degraded.CompareAndSwap(true, false) && s.logger != nil {
+		s.logger.Info("Session-sticky routing: Redis reachable again, bindings are shared")
 	}
 }
 
 func (s *redisSessionStore) Get(sessionID, modelID string) (string, bool) {
+	if !s.redisAvailable() {
+		return s.local.Get(sessionID, modelID)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), redisSessionCommandTimeout)
 	defer cancel()
-	cred, err := s.client.Do(ctx, s.client.B().Get().Key(s.key(sessionID, modelID)).Build()).ToString()
-	if err == nil {
-		s.warned.Store(false)
-		return cred, cred != ""
+	cred, found, err := s.kv.Get(ctx, s.key(sessionID, modelID))
+	if err != nil {
+		s.fail("get", err)
+		return s.local.Get(sessionID, modelID)
 	}
-	if valkey.IsValkeyNil(err) {
-		return "", false
-	}
-	s.warn("get", err)
-	return s.local.Get(sessionID, modelID)
+	s.succeed()
+	return cred, found
 }
 
 func (s *redisSessionStore) Set(sessionID, modelID, credentialName string) {
 	s.local.Set(sessionID, modelID, credentialName)
+	if !s.redisAvailable() {
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), redisSessionCommandTimeout)
 	defer cancel()
-	cmd := s.client.B().Set().Key(s.key(sessionID, modelID)).Value(credentialName).Px(s.ttl).Build()
-	if err := s.client.Do(ctx, cmd).Error(); err != nil {
-		s.warn("set", err)
+	if err := s.kv.Set(ctx, s.key(sessionID, modelID), credentialName, s.ttl); err != nil {
+		s.fail("set", err)
+		return
 	}
+	s.succeed()
 }
 
 func (s *redisSessionStore) Delete(sessionID, modelID string) {
 	s.local.Delete(sessionID, modelID)
+	if !s.redisAvailable() {
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), redisSessionCommandTimeout)
 	defer cancel()
-	if err := s.client.Do(ctx, s.client.B().Del().Key(s.key(sessionID, modelID)).Build()).Error(); err != nil {
-		s.warn("delete", err)
+	if err := s.kv.Del(ctx, s.key(sessionID, modelID)); err != nil {
+		s.fail("delete", err)
+		return
 	}
+	s.succeed()
 }
 
-// Len reports the replica-local mirror; the shared Redis keyspace is not scanned.
+// Len reports the replica-local mirror only; the shared keyspace is not scanned.
+// It is used by tests and is not a count of all bindings of the deployment.
 func (s *redisSessionStore) Len() int { return s.local.Len() }
 
 func (s *redisSessionStore) StartCleanup(ctx context.Context, interval time.Duration) {

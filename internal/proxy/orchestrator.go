@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"strings"
 
@@ -114,6 +115,7 @@ func (p *Proxy) orchestrateRequest(
 	effectiveDenylist := mergeCredentialDenylists(inboundDenylist, policyDenylist)
 	r = withEffectiveCredentialDenylist(r, effectiveDenylist)
 	routingExclusions := p.reasoningOnlyExclusions(logCtx.ReasoningRequested)
+	reasoningExcluded := maps.Clone(routingExclusions)
 	for _, credentialName := range effectiveDenylist {
 		if p.balancer.IsProxyCredential(credentialName) {
 			continue
@@ -224,7 +226,9 @@ func (p *Proxy) orchestrateRequest(
 		setBaseBody(visionBody)
 	}
 
-	cred, ok := p.selectCredentialForModel(w, modelID, logCtx.SessionID, preferredCredentialName, routingExclusions, logCtx)
+	logCtx.stickyExclude = routingExclusions
+	logCtx.stickyRequestExcluded = reasoningExcluded
+	cred, ok := p.selectCredentialForModel(w, modelID, p.stickySessionKey(logCtx), preferredCredentialName, routingExclusions, logCtx)
 	if !ok {
 		return nil, false
 	}
@@ -1153,30 +1157,36 @@ func (p *Proxy) selectCredentialForModel(
 	}
 
 	if sessionID != "" && p.sessionStore != nil {
-		if credName, ok := p.sessionStore.Get(sessionID, modelID); ok && !exclude[credName] {
-			cred, err := p.balancer.NextSpecificScoped(credName, modelID, logCtx.Scope)
-			if err == nil {
-				logCtx.StickyBoundCredential = credName
-				p.logger.DebugContext(logCtx.Context(), "Session-sticky routing: using cached credential",
-					"session_id", sessionID,
-					"credential", cred.Name,
+		if credName, ok := p.sessionStore.Get(sessionID, modelID); ok {
+			if exclude[credName] {
+				if logCtx.stickyRequestExcluded[credName] {
+					// Excluded for this request only (e.g. reasoning-only credential on a
+					// non-reasoning turn): serve elsewhere, keep the session.
+					logCtx.StickyHeldCredential = credName
+				}
+			} else {
+				cred, err := p.balancer.NextSpecificScoped(credName, modelID, logCtx.Scope)
+				if err == nil {
+					p.logger.DebugContext(logCtx.Context(), "Session-sticky routing: using cached credential",
+						"session_id", logCtx.SessionID,
+						"credential", cred.Name,
+						"model", modelID,
+					)
+					return cred, true
+				}
+				// Busy (its own RPM/TPM limit) is temporary: keep the binding. Banned,
+				// removed or not visible: let the cascade pick and the binding follow.
+				if errors.Is(err, balancer.ErrRateLimitExceeded) {
+					logCtx.StickyHeldCredential = credName
+				}
+				p.logger.DebugContext(logCtx.Context(), "Session-sticky routing: cached credential unavailable, falling back to standard selection",
+					"session_id", logCtx.SessionID,
+					"binding_kept", logCtx.StickyHeldCredential != "",
+					"credential", credName,
 					"model", modelID,
+					"error", err,
 				)
-				return cred, true
 			}
-
-			if p.credentialServesModel(credName, modelID) {
-				// Temporarily unavailable (rate limit, short ban): serve this turn
-				// elsewhere but keep the binding for the next one.
-				logCtx.StickyHeldCredential = credName
-			}
-			p.logger.DebugContext(logCtx.Context(), "Session-sticky routing: cached credential unavailable, falling back to standard selection",
-				"session_id", sessionID,
-				"binding_kept", logCtx.StickyHeldCredential != "",
-				"credential", credName,
-				"model", modelID,
-				"error", err,
-			)
 		}
 	}
 

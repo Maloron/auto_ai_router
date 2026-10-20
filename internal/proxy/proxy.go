@@ -4,7 +4,9 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -286,8 +288,9 @@ type RequestLogContext struct {
 	StreamOutcome         string                   // completed, client_aborted, or stream_error
 	Credential            *config.CredentialConfig // Credential used
 	SessionID             string                   // Session ID
-	StickyBoundCredential string                   // Credential the session binding routed this request to
-	StickyHeldCredential  string                   // Credential the session is bound to but was unavailable for this request (binding kept)
+	StickyHeldCredential  string                   // Credential the session stays bound to although it could not take this request (busy or excluded for it)
+	stickyExclude         map[string]bool          // Credentials excluded for this request (denylist, reasoning, tried); used to find the model's best tier
+	stickyRequestExcluded map[string]bool          // Subset excluded only because of this request's shape (reasoning-only credentials)
 	TargetURL             string                   // Target URL (for APIBase extraction)
 	TokenInfo             *litellmdb.TokenInfo     // User/team/org info
 	IsImageGeneration     bool                     // True if this is an image generation request
@@ -601,44 +604,50 @@ func (p *Proxy) clearSessionBinding(sessionID, modelID string) {
 	p.sessionStore.Delete(sessionID, modelID)
 }
 
-// bindSessionAfterSuccess records which credential served a completed turn,
-// unless that would move the session away from a credential it is still bound
-// to. A bound credential that was skipped because it was momentarily
-// unavailable (rate limit, short ban), or that failed over to another one,
-// keeps the binding: the next turn goes back to it and to its warm prompt
-// cache. Such a binding is not refreshed, so it expires one TTL after the
-// bound credential last served the session.
+// stickySessionKey is the key session bindings are stored under. Client
+// session IDs are not unique across tenants (two customers may both send
+// user="1" or the same prompt_cache_key), so for client keys the binding is
+// scoped by the hashed API key. Master-key traffic (AIR-to-AIR hops, internal
+// callers) keeps the raw session ID so a chain of routers shares the binding.
+func (p *Proxy) stickySessionKey(logCtx *RequestLogContext) string {
+	if logCtx == nil || logCtx.SessionID == "" {
+		return ""
+	}
+	if logCtx.Token == "" || p.isMasterKey(logCtx.Token) {
+		return logCtx.SessionID
+	}
+	sum := sha256.Sum256([]byte(logCtx.Token))
+	return "k:" + hex.EncodeToString(sum[:8]) + ":" + logCtx.SessionID
+}
+
+// bindSessionAfterSuccess records which credential served a completed turn.
+//
+// The cascade decides, the binding follows:
+//   - a bound credential that was only busy (its own RPM/TPM limit) or excluded
+//     for this one request keeps the session: the next turn goes back to it and
+//     to its warm prompt cache;
+//   - a bound credential that failed or is banned loses the session to the
+//     credential that served the turn;
+//   - sessions are bound only to credentials in the best priority tier the model
+//     has, so a turn served by a lower tier (cascade fallback) leaves the next
+//     turn free to return to the primary tier.
 func (p *Proxy) bindSessionAfterSuccess(logCtx *RequestLogContext, modelID, credentialName string) {
-	if logCtx == nil {
+	if logCtx == nil || p.sessionStore == nil {
 		return
 	}
 	if held := logCtx.StickyHeldCredential; held != "" && held != credentialName {
 		return
 	}
-	if bound := logCtx.StickyBoundCredential; bound != "" && bound != credentialName && p.credentialServesModel(bound, modelID) {
+	if !p.balancer.IsTopPriorityForModel(credentialName, modelID, logCtx.stickyExclude, logCtx.Scope) {
 		return
 	}
-	p.setSessionBinding(logCtx.SessionID, modelID, credentialName)
-}
-
-// credentialServesModel reports whether credentialName is still configured for
-// modelID. Unknown means "no": a binding that cannot be confirmed may move.
-func (p *Proxy) credentialServesModel(credentialName, modelID string) bool {
-	if p.modelManager == nil || !p.modelManager.IsEnabled() {
-		return false
-	}
-	for _, name := range p.modelManager.GetCredentialsForModel(modelID) {
-		if name == credentialName {
-			return true
-		}
-	}
-	return false
+	p.setSessionBinding(p.stickySessionKey(logCtx), modelID, credentialName)
 }
 
 // shouldClearSessionBindingOnFailure decides whether an incomplete request may
 // drop the session binding. A client that hung up (499) says nothing about the
-// bound credential, and a binding held while its credential was temporarily
-// unavailable must survive the failure of the substitute.
+// bound credential, and a binding held while its credential was busy must
+// survive the failure of the substitute.
 func shouldClearSessionBindingOnFailure(ctx context.Context, logCtx *RequestLogContext) bool {
 	if logCtx.StickyHeldCredential != "" {
 		return false
@@ -647,7 +656,7 @@ func shouldClearSessionBindingOnFailure(ctx context.Context, logCtx *RequestLogC
 		logCtx.StreamOutcome == "client_aborted" {
 		return false
 	}
-	return ctx == nil || ctx.Err() == nil
+	return ctx == nil || !errors.Is(ctx.Err(), context.Canceled)
 }
 
 // GetMasterKey returns the proxy master key.
@@ -1047,7 +1056,7 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request) {
 		// The guard makes this a no-op when reconciliation already happened.
 		p.reconcileBudgetAndRateLimits(logCtx, 0)
 		if !logCtx.RequestCompleted && shouldClearSessionBindingOnFailure(r.Context(), logCtx) {
-			p.clearSessionBinding(logCtx.SessionID, logCtx.ModelID)
+			p.clearSessionBinding(p.stickySessionKey(logCtx), logCtx.ModelID)
 		}
 	}()
 
