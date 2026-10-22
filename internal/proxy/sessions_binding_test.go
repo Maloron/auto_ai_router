@@ -186,6 +186,43 @@ func TestStickyBinding_NotBoundToLowerTier(t *testing.T) {
 	assert.Empty(t, boundTo(t, prx, "sess-5"), "a lower-tier credential must not become the session's home")
 }
 
+// Regression: a session was bound to a primary-tier credential that genuinely
+// fails this turn (not merely busy or excluded) and the cascade falls back to
+// a reserve-tier credential that serves it. The stale binding to the failed
+// primary must be cleared, not left in place.
+//
+// With a single credential in the primary tier (as here), the next turn's
+// plain round-robin still has nowhere else to go and will try that same
+// credential again regardless of this fix - that part of the picture only
+// improves once the primary tier has another live member. What this fix does
+// guarantee, and what this test checks, is that the store stops asserting a
+// binding to a credential that just failed: nothing short-circuits the next
+// turn's selection straight back to it via the sticky lookup, and once the
+// primary tier does have other members, round-robin gets a fair shot at them
+// instead of every turn being pinned to the one that failed.
+func TestStickyBinding_ClearedWhenBoundCredentialFailsAndRescuerIsLowerTier(t *testing.T) {
+	var primaryCalls, reserveCalls atomic.Int32
+	primarySrv := failingProvider(t, &primaryCalls)
+	defer primarySrv.Close()
+	reserveSrv := okProvider(t, &reserveCalls)
+	defer reserveSrv.Close()
+
+	primary := directDenylistCredential("primary-provider", primarySrv.URL)
+	primary.Priority = 1
+	reserve := directDenylistCredential("reserve-provider", reserveSrv.URL)
+	reserve.Priority = 2
+	prx := stickyProxy(t, primary, reserve)
+	prx.sessionStore.Set("sess-6b", "route-a", primary.Name)
+
+	w := httptest.NewRecorder()
+	prx.ProxyRequest(w, stickyRouteRequest(context.Background(), "sess-6b"))
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, int32(1), primaryCalls.Load(), "the failed primary was actually tried")
+	assert.Equal(t, int32(1), reserveCalls.Load())
+	assert.Empty(t, boundTo(t, prx, "sess-6b"), "the stale binding to the failed primary must not survive")
+}
+
 // A binding to a credential that no longer serves the model moves to the one
 // that served the turn.
 func TestStickyBinding_MovesWhenBoundCredentialNoLongerServesModel(t *testing.T) {

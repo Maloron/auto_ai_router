@@ -639,6 +639,16 @@ func (p *Proxy) bindSessionAfterSuccess(logCtx *RequestLogContext, modelID, cred
 		return
 	}
 	if !p.balancer.IsTopPriorityForModel(credentialName, modelID, logCtx.stickyExclude, logCtx.Scope) {
+		// The credential that served this turn isn't eligible to become the
+		// session's home (reserve/lower tier). Any existing binding must still
+		// go: it was never "held" here (that case returned above), so if it
+		// pointed at a credential, that credential just failed or was banned
+		// on this very request. Leaving it in place would make the next
+		// turn's sticky lookup target that dead credential directly again,
+		// bypassing the cascade's own fair selection among its live peers -
+		// the exact bug this feature exists to fix, just one hop removed
+		// (primary fails, reserve rescues, primary stays bound anyway).
+		p.clearSessionBinding(p.stickySessionKey(logCtx), modelID)
 		return
 	}
 	p.setSessionBinding(p.stickySessionKey(logCtx), modelID, credentialName)

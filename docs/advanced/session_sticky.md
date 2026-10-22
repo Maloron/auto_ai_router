@@ -135,7 +135,7 @@ Key consequences:
 - A binding points to a credential that **successfully completed at least one request** and is therefore likely to have a warm cache.
 - The cascade decides, the binding follows. If the bound credential is **busy** (its own RPM/TPM limit is reached) or excluded for this one request (a reasoning-only credential on a plain turn), the turn is served elsewhere and **the binding is kept**: the next turn goes back to it and its warm cache.
 - If the bound credential **fails or is banned**, the session moves to the credential that served the turn: a credential that keeps erroring hands its users to the next one.
-- Sessions are bound only to credentials in the best priority tier the model has (fallback credentials and lower tiers excluded). A turn served by a lower tier leaves the session unbound, so the next turn tries the primary tier again instead of staying on the reserve.
+- Sessions are bound only to credentials in the best priority tier the model has (fallback credentials and lower tiers excluded). A turn served by a lower tier clears any existing binding instead of pinning it to a reserve credential (or to whatever failed and got rescued by the reserve), so the next turn tries the primary tier again from a clean slate.
 - A client disconnect (499) does not clear the binding: it says nothing about the credential.
 - A binding is refreshed only when a credential serves a turn, so a binding held for a busy credential expires one TTL after it last served.
 - Bindings from client API keys are scoped by the hashed key, so two customers sending the same `user` or `prompt_cache_key` do not share a binding. Master-key traffic (AIR-to-AIR hops) keeps the raw session ID.
@@ -316,21 +316,21 @@ r2 = client.responses.create(
 
 ## Edge Cases
 
-| Scenario                             | Behaviour                                                                             |
-| ------------------------------------ | ------------------------------------------------------------------------------------- |
-| `session_sticky_enabled: false`      | Plain round-robin, no binding stored                                                  |
-| No `user` / `session_id` in request  | No binding attempted, plain round-robin                                               |
-| First request for a session          | Round-robin selects credential; binding written only on success                       |
-| Bound credential is banned           | Fallback to the cascade; binding moves to the credential that served                  |
-| Bound credential is busy (RPM/TPM)   | Fallback to the cascade; binding kept, next turn returns to it                        |
-| Bound credential removed from config | `NextSpecific` returns not-found; fallback to round-robin                             |
-| Request fails (5xx)                  | Binding is cleared by `defer` in `ProxyRequest`                                       |
-| Client disconnects (499)             | Binding kept                                                                          |
-| Streaming failure mid-stream         | `streamCompleted = false` → binding cleared                                           |
-| Same-type retry succeeds on cred B   | Binding moves to B if B is in the model's best tier, else the session is left unbound |
-| Fallback proxy succeeds              | Same as retry                                                                         |
-| TTL expired between turns            | Binding treated as absent; next round-robin result starts a new binding               |
-| One `sessionID`, multiple models     | Independent bindings per `{sessionID, modelID}` pair                                  |
+| Scenario                             | Behaviour                                                                                 |
+| ------------------------------------ | ----------------------------------------------------------------------------------------- |
+| `session_sticky_enabled: false`      | Plain round-robin, no binding stored                                                      |
+| No `user` / `session_id` in request  | No binding attempted, plain round-robin                                                   |
+| First request for a session          | Round-robin selects credential; binding written only on success                           |
+| Bound credential is banned           | Fallback to the cascade; binding moves to the credential that served                      |
+| Bound credential is busy (RPM/TPM)   | Fallback to the cascade; binding kept, next turn returns to it                            |
+| Bound credential removed from config | `NextSpecific` returns not-found; fallback to round-robin                                 |
+| Request fails (5xx)                  | Binding is cleared by `defer` in `ProxyRequest`                                           |
+| Client disconnects (499)             | Binding kept                                                                              |
+| Streaming failure mid-stream         | `streamCompleted = false` → binding cleared                                               |
+| Same-type retry succeeds on cred B   | Binding moves to B if B is in the model's best tier, else any existing binding is cleared |
+| Fallback proxy succeeds              | Same as retry                                                                             |
+| TTL expired between turns            | Binding treated as absent; next round-robin result starts a new binding                   |
+| One `sessionID`, multiple models     | Independent bindings per `{sessionID, modelID}` pair                                      |
 
 ## Performance Notes
 
